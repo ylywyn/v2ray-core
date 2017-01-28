@@ -4,8 +4,8 @@ import (
 	"net"
 	"testing"
 
-	v2net "github.com/v2ray/v2ray-core/common/net"
-	"github.com/v2ray/v2ray-core/testing/assert"
+	v2net "v2ray.com/core/common/net"
+	"v2ray.com/core/testing/assert"
 )
 
 func TestIPv4Address(t *testing.T) {
@@ -71,52 +71,4 @@ func TestNetIPv4Address(t *testing.T) {
 	addr := v2net.IPAddress(ip)
 	assert.Address(addr).IsIPv4()
 	assert.Address(addr).EqualsString("1.2.3.4")
-}
-
-func TestIPv4AddressEquals(t *testing.T) {
-	assert := assert.On(t)
-
-	addr := v2net.IPAddress([]byte{1, 2, 3, 4})
-	assert.Address(addr).NotEquals(nil)
-
-	addr2 := v2net.IPAddress([]byte{1, 2, 3, 4})
-	assert.Address(addr).Equals(addr2)
-
-	addr3 := v2net.IPAddress([]byte{1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 1, 2, 3, 4, 5, 6})
-	assert.Address(addr).NotEquals(addr3)
-
-	addr4 := v2net.IPAddress([]byte{1, 2, 3, 5})
-	assert.Address(addr).NotEquals(addr4)
-}
-
-func TestIPv6AddressEquals(t *testing.T) {
-	assert := assert.On(t)
-
-	addr := v2net.IPAddress([]byte{1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 1, 2, 3, 4, 5, 6})
-	assert.Bool(addr.Equals(nil)).IsFalse()
-
-	addr2 := v2net.IPAddress([]byte{1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 1, 2, 3, 4, 5, 6})
-	assert.Bool(addr.Equals(addr2)).IsTrue()
-
-	addr3 := v2net.IPAddress([]byte{1, 2, 3, 4})
-	assert.Bool(addr.Equals(addr3)).IsFalse()
-
-	addr4 := v2net.IPAddress([]byte{1, 3, 3, 4, 5, 6, 7, 8, 9, 10, 1, 2, 3, 4, 5, 6})
-	assert.Bool(addr.Equals(addr4)).IsFalse()
-}
-
-func TestDomainAddressEquals(t *testing.T) {
-	assert := assert.On(t)
-
-	addr := v2net.DomainAddress("v2ray.com")
-	assert.Bool(addr.Equals(nil)).IsFalse()
-
-	addr2 := v2net.DomainAddress("v2ray.com")
-	assert.Bool(addr.Equals(addr2)).IsTrue()
-
-	addr3 := v2net.DomainAddress("www.v2ray.com")
-	assert.Bool(addr.Equals(addr3)).IsFalse()
-
-	addr4 := v2net.IPAddress([]byte{1, 3, 3, 4, 5, 6, 7, 8, 9, 10, 1, 2, 3, 4, 5, 6})
-	assert.Bool(addr.Equals(addr4)).IsFalse()
 }

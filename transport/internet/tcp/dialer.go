@@ -1,49 +1,65 @@
 package tcp
 
 import (
+	"context"
+	"crypto/tls"
 	"net"
 
-	"github.com/v2ray/v2ray-core/common/log"
-	v2net "github.com/v2ray/v2ray-core/common/net"
-	"github.com/v2ray/v2ray-core/transport/internet"
+	"v2ray.com/core/common"
+	"v2ray.com/core/common/errors"
+	"v2ray.com/core/common/log"
+	v2net "v2ray.com/core/common/net"
+	"v2ray.com/core/transport/internet"
+	"v2ray.com/core/transport/internet/internal"
+	v2tls "v2ray.com/core/transport/internet/tls"
 )
 
 var (
-	globalCache = NewConnectionCache()
+	globalCache = internal.NewConnectionPool()
 )
 
-func Dial(src v2net.Address, dest v2net.Destination) (internet.Connection, error) {
-	log.Info("Dailing TCP to ", dest)
-	if src == nil {
-		src = v2net.AnyIP
-	}
-	id := src.String() + "-" + dest.NetAddr()
+func Dial(ctx context.Context, dest v2net.Destination) (internet.Connection, error) {
+	log.Info("Internet|TCP: Dailing TCP to ", dest)
+	src := internet.DialerSourceFromContext(ctx)
+
+	tcpSettings := internet.TransportSettingsFromContext(ctx).(*Config)
+
+	id := internal.NewConnectionID(src, dest)
 	var conn net.Conn
-	if dest.IsTCP() && effectiveConfig.ConnectionReuse {
+	if dest.Network == v2net.Network_TCP && tcpSettings.IsConnectionReuse() {
 		conn = globalCache.Get(id)
 	}
 	if conn == nil {
 		var err error
-		conn, err = internet.DialToDest(src, dest)
+		conn, err = internet.DialSystem(src, dest)
 		if err != nil {
 			return nil, err
 		}
+		if securitySettings := internet.SecuritySettingsFromContext(ctx); securitySettings != nil {
+			tlsConfig, ok := securitySettings.(*v2tls.Config)
+			if ok {
+				config := tlsConfig.GetTLSConfig()
+				if dest.Address.Family().IsDomain() {
+					config.ServerName = dest.Address.Domain()
+				}
+				conn = tls.Client(conn, config)
+			}
+		}
+		if tcpSettings.HeaderSettings != nil {
+			headerConfig, err := tcpSettings.HeaderSettings.GetInstance()
+			if err != nil {
+				return nil, errors.Base(err).Message("Interent|TCP: Failed to get header settings.")
+			}
+			auth, err := internet.CreateConnectionAuthenticator(headerConfig)
+			if err != nil {
+				return nil, errors.Base(err).Message("Internet|TCP: Failed to create header authenticator.")
+			}
+			conn = auth.Client(conn)
+		}
 	}
-	return NewConnection(id, conn, globalCache), nil
-}
-
-func DialRaw(src v2net.Address, dest v2net.Destination) (internet.Connection, error) {
-	log.Info("Dailing Raw TCP to ", dest)
-	conn, err := internet.DialToDest(src, dest)
-	if err != nil {
-		return nil, err
-	}
-	return &RawConnection{
-		TCPConn: *conn.(*net.TCPConn),
-	}, nil
+	return internal.NewConnection(id, conn, globalCache, internal.ReuseConnection(tcpSettings.IsConnectionReuse())), nil
 }
 
 func init() {
-	internet.TCPDialer = Dial
-	internet.RawTCPDialer = DialRaw
+	common.Must(internet.RegisterTransportDialer(internet.TransportProtocol_TCP, Dial))
 }

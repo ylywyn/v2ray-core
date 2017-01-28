@@ -1,21 +1,16 @@
 package transport
 
 import (
-	"github.com/v2ray/v2ray-core/transport/internet/kcp"
-	"github.com/v2ray/v2ray-core/transport/internet/tcp"
+	"v2ray.com/core/transport/internet"
 )
 
-// Config for V2Ray transport layer.
-type Config struct {
-	tcpConfig *tcp.Config
-	kcpConfig kcp.Config
-}
-
 // Apply applies this Config.
-func (this *Config) Apply() error {
-	if this.tcpConfig != nil {
-		this.tcpConfig.Apply()
+func (c *Config) Apply() error {
+	if c == nil {
+		return nil
 	}
-	this.kcpConfig.Apply()
+	if err := internet.ApplyGlobalTransportSettings(c.TransportSettings); err != nil {
+		return err
+	}
 	return nil
 }

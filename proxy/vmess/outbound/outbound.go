@@ -1,39 +1,59 @@
 package outbound
 
 import (
-	"io"
-	"sync"
+	"context"
+	"time"
 
-	"github.com/v2ray/v2ray-core/app"
-	"github.com/v2ray/v2ray-core/common/alloc"
-	v2io "github.com/v2ray/v2ray-core/common/io"
-	"github.com/v2ray/v2ray-core/common/log"
-	v2net "github.com/v2ray/v2ray-core/common/net"
-	"github.com/v2ray/v2ray-core/common/protocol"
-	"github.com/v2ray/v2ray-core/common/protocol/raw"
-	"github.com/v2ray/v2ray-core/common/retry"
-	"github.com/v2ray/v2ray-core/proxy"
-	"github.com/v2ray/v2ray-core/proxy/internal"
-	vmessio "github.com/v2ray/v2ray-core/proxy/vmess/io"
-	"github.com/v2ray/v2ray-core/transport/internet"
-	"github.com/v2ray/v2ray-core/transport/ray"
+	"v2ray.com/core/app"
+	"v2ray.com/core/common"
+	"v2ray.com/core/common/buf"
+	"v2ray.com/core/common/bufio"
+	"v2ray.com/core/common/errors"
+	"v2ray.com/core/common/log"
+	"v2ray.com/core/common/net"
+	"v2ray.com/core/common/protocol"
+	"v2ray.com/core/common/retry"
+	"v2ray.com/core/common/signal"
+	"v2ray.com/core/proxy"
+	"v2ray.com/core/proxy/vmess"
+	"v2ray.com/core/proxy/vmess/encoding"
+	"v2ray.com/core/transport/internet"
+	"v2ray.com/core/transport/ray"
 )
 
+// VMessOutboundHandler is an outbound connection handler for VMess protocol.
 type VMessOutboundHandler struct {
-	receiverManager *ReceiverManager
-	meta            *proxy.OutboundHandlerMeta
+	serverList   *protocol.ServerList
+	serverPicker protocol.ServerPicker
 }
 
-func (this *VMessOutboundHandler) Dispatch(target v2net.Destination, payload *alloc.Buffer, ray ray.OutboundRay) error {
-	defer ray.OutboundInput().Release()
-	defer ray.OutboundOutput().Close()
+func New(ctx context.Context, config *Config) (*VMessOutboundHandler, error) {
+	space := app.SpaceFromContext(ctx)
+	if space == nil {
+		return nil, errors.New("VMess|Outbound: No space in context.")
+	}
 
-	var rec *Receiver
+	serverList := protocol.NewServerList()
+	for _, rec := range config.Receiver {
+		serverList.AddServer(protocol.NewServerSpecFromPB(*rec))
+	}
+	handler := &VMessOutboundHandler{
+		serverList:   serverList,
+		serverPicker: protocol.NewRoundRobinServerPicker(serverList),
+	}
+
+	return handler, nil
+}
+
+// Dispatch implements OutboundHandler.Dispatch().
+func (v *VMessOutboundHandler) Process(ctx context.Context, outboundRay ray.OutboundRay) error {
+	var rec *protocol.ServerSpec
 	var conn internet.Connection
 
-	err := retry.Timed(5, 100).On(func() error {
-		rec = this.receiverManager.PickReceiver()
-		rawConn, err := internet.Dial(this.meta.Address, rec.Destination, this.meta.StreamSettings)
+	dialer := proxy.DialerFromContext(ctx)
+	err := retry.ExponentialBackoff(5, 100).On(func() error {
+		rec = v.serverPicker.PickServer()
+		rawConn, err := dialer.Dial(ctx, rec.Destination())
 		if err != nil {
 			return err
 		}
@@ -42,135 +62,109 @@ func (this *VMessOutboundHandler) Dispatch(target v2net.Destination, payload *al
 		return nil
 	})
 	if err != nil {
-		log.Error("VMess|Outbound: Failed to find an available destination:", err)
+		log.Warning("VMess|Outbound: Failed to find an available destination:", err)
 		return err
 	}
-	log.Info("VMess|Outbound: Tunneling request to ", target, " via ", rec.Destination)
+	defer conn.Close()
+
+	target := proxy.DestinationFromContext(ctx)
+	log.Info("VMess|Outbound: Tunneling request to ", target, " via ", rec.Destination())
 
 	command := protocol.RequestCommandTCP
-	if target.IsUDP() {
+	if target.Network == net.Network_UDP {
 		command = protocol.RequestCommandUDP
 	}
 	request := &protocol.RequestHeader{
-		Version: raw.Version,
+		Version: encoding.Version,
 		User:    rec.PickUser(),
 		Command: command,
-		Address: target.Address(),
-		Port:    target.Port(),
+		Address: target.Address,
+		Port:    target.Port,
 		Option:  protocol.RequestOptionChunkStream,
 	}
 
-	defer conn.Close()
+	rawAccount, err := request.User.GetTypedAccount()
+	if err != nil {
+		log.Warning("VMess|Outbound: Failed to get user account: ", err)
+		return err
+	}
+	account := rawAccount.(*vmess.InternalAccount)
+	request.Security = account.Security
 
 	conn.SetReusable(true)
 	if conn.Reusable() { // Conn reuse may be disabled on transportation layer
 		request.Option.Set(protocol.RequestOptionConnectionReuse)
 	}
 
-	input := ray.OutboundInput()
-	output := ray.OutboundOutput()
+	input := outboundRay.OutboundInput()
+	output := outboundRay.OutboundOutput()
 
-	var requestFinish, responseFinish sync.Mutex
-	requestFinish.Lock()
-	responseFinish.Lock()
+	session := encoding.NewClientSession(protocol.DefaultIDHash)
 
-	session := raw.NewClientSession(protocol.DefaultIDHash)
+	requestDone := signal.ExecuteAsync(func() error {
+		writer := bufio.NewWriter(conn)
+		session.EncodeRequestHeader(request, writer)
 
-	go this.handleRequest(session, conn, request, payload, input, &requestFinish)
-	go this.handleResponse(session, conn, request, rec.Destination, output, &responseFinish)
+		bodyWriter := session.EncodeRequestBody(request, writer)
+		firstPayload, err := input.ReadTimeout(time.Millisecond * 500)
+		if err != nil && err != ray.ErrReadTimeout {
+			return errors.Base(err).Message("VMess|Outbound: Failed to get first payload.")
+		}
+		if !firstPayload.IsEmpty() {
+			if err := bodyWriter.Write(firstPayload); err != nil {
+				return errors.Base(err).Message("VMess|Outbound: Failed to write first payload.")
+			}
+			firstPayload.Release()
+		}
 
-	requestFinish.Lock()
-	responseFinish.Lock()
+		writer.SetBuffered(false)
+
+		if err := buf.PipeUntilEOF(input, bodyWriter); err != nil {
+			return err
+		}
+
+		if request.Option.Has(protocol.RequestOptionChunkStream) {
+			if err := bodyWriter.Write(buf.NewLocal(8)); err != nil {
+				return err
+			}
+		}
+		return nil
+	})
+
+	responseDone := signal.ExecuteAsync(func() error {
+		defer output.Close()
+
+		reader := bufio.NewReader(conn)
+		header, err := session.DecodeResponseHeader(reader)
+		if err != nil {
+			return err
+		}
+		v.handleCommand(rec.Destination(), header.Command)
+
+		conn.SetReusable(header.Option.Has(protocol.ResponseOptionConnectionReuse))
+
+		reader.SetBuffered(false)
+		bodyReader := session.DecodeResponseBody(request, reader)
+		if err := buf.PipeUntilEOF(bodyReader, output); err != nil {
+			return err
+		}
+
+		return nil
+	})
+
+	if err := signal.ErrorOrFinish2(requestDone, responseDone); err != nil {
+		log.Info("VMess|Outbound: Connection ending with ", err)
+		conn.SetReusable(false)
+		input.CloseError()
+		output.CloseError()
+		return err
+	}
+
 	return nil
 }
 
-func (this *VMessOutboundHandler) handleRequest(session *raw.ClientSession, conn internet.Connection, request *protocol.RequestHeader, payload *alloc.Buffer, input v2io.Reader, finish *sync.Mutex) {
-	defer finish.Unlock()
-
-	writer := v2io.NewBufferedWriter(conn)
-	defer writer.Release()
-	session.EncodeRequestHeader(request, writer)
-
-	bodyWriter := session.EncodeRequestBody(writer)
-	var streamWriter v2io.Writer = v2io.NewAdaptiveWriter(bodyWriter)
-	if request.Option.Has(protocol.RequestOptionChunkStream) {
-		streamWriter = vmessio.NewAuthChunkWriter(streamWriter)
-	}
-	if err := streamWriter.Write(payload); err != nil {
-		conn.SetReusable(false)
-	}
-	writer.SetCached(false)
-
-	err := v2io.Pipe(input, streamWriter)
-	if err != io.EOF {
-		conn.SetReusable(false)
-	}
-
-	if request.Option.Has(protocol.RequestOptionChunkStream) {
-		err := streamWriter.Write(alloc.NewSmallBuffer().Clear())
-		if err != nil {
-			conn.SetReusable(false)
-		}
-	}
-	streamWriter.Release()
-	return
-}
-
-func (this *VMessOutboundHandler) handleResponse(session *raw.ClientSession, conn internet.Connection, request *protocol.RequestHeader, dest v2net.Destination, output v2io.Writer, finish *sync.Mutex) {
-	defer finish.Unlock()
-
-	reader := v2io.NewBufferedReader(conn)
-	defer reader.Release()
-
-	header, err := session.DecodeResponseHeader(reader)
-	if err != nil {
-		conn.SetReusable(false)
-		log.Warning("VMess|Outbound: Failed to read response: ", err)
-		return
-	}
-	go this.handleCommand(dest, header.Command)
-
-	if !header.Option.Has(protocol.ResponseOptionConnectionReuse) {
-		conn.SetReusable(false)
-	}
-
-	reader.SetCached(false)
-	decryptReader := session.DecodeResponseBody(reader)
-
-	var bodyReader v2io.Reader
-	if request.Option.Has(protocol.RequestOptionChunkStream) {
-		bodyReader = vmessio.NewAuthChunkReader(decryptReader)
-	} else {
-		bodyReader = v2io.NewAdaptiveReader(decryptReader)
-	}
-
-	err = v2io.Pipe(bodyReader, output)
-	if err != io.EOF {
-		conn.SetReusable(false)
-	}
-
-	bodyReader.Release()
-
-	return
-}
-
-type Factory struct{}
-
-func (this *Factory) StreamCapability() internet.StreamConnectionType {
-	return internet.StreamConnectionTypeRawTCP | internet.StreamConnectionTypeTCP | internet.StreamConnectionTypeKCP
-}
-
-func (this *Factory) Create(space app.Space, rawConfig interface{}, meta *proxy.OutboundHandlerMeta) (proxy.OutboundHandler, error) {
-	vOutConfig := rawConfig.(*Config)
-
-	handler := &VMessOutboundHandler{
-		receiverManager: NewReceiverManager(vOutConfig.Receivers),
-		meta:            meta,
-	}
-
-	return handler, nil
-}
-
 func init() {
-	internal.MustRegisterOutboundHandlerCreator("vmess", new(Factory))
+	common.Must(common.RegisterConfig((*Config)(nil), func(ctx context.Context, config interface{}) (interface{}, error) {
+		return New(ctx, config.(*Config))
+	}))
 }

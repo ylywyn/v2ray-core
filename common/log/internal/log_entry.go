@@ -4,32 +4,10 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/v2ray/v2ray-core/common"
-	"github.com/v2ray/v2ray-core/common/serial"
+	"v2ray.com/core/common/serial"
 )
 
-func InterfaceToString(value interface{}) string {
-	if value == nil {
-		return " "
-	}
-	switch value := value.(type) {
-	case string:
-		return value
-	case *string:
-		return *value
-	case fmt.Stringer:
-		return value.String()
-	case error:
-		return value.Error()
-	case []byte:
-		return serial.BytesToHexString(value)
-	default:
-		return fmt.Sprint(value)
-	}
-}
-
 type LogEntry interface {
-	common.Releasable
 	fmt.Stringer
 }
 
@@ -38,20 +16,8 @@ type ErrorLog struct {
 	Values []interface{}
 }
 
-func (this *ErrorLog) Release() {
-	for index := range this.Values {
-		this.Values[index] = nil
-	}
-	this.Values = nil
-}
-
-func (this *ErrorLog) String() string {
-	values := make([]string, len(this.Values)+1)
-	values[0] = this.Prefix
-	for i, value := range this.Values {
-		values[i+1] = InterfaceToString(value)
-	}
-	return strings.Join(values, "")
+func (v *ErrorLog) String() string {
+	return v.Prefix + serial.Concat(v.Values...)
 }
 
 type AccessLog struct {
@@ -61,12 +27,6 @@ type AccessLog struct {
 	Reason interface{}
 }
 
-func (this *AccessLog) Release() {
-	this.From = nil
-	this.To = nil
-	this.Reason = nil
-}
-
-func (this *AccessLog) String() string {
-	return strings.Join([]string{InterfaceToString(this.From), this.Status, InterfaceToString(this.To), InterfaceToString(this.Reason)}, " ")
+func (v *AccessLog) String() string {
+	return strings.Join([]string{serial.ToString(v.From), v.Status, serial.ToString(v.To), serial.ToString(v.Reason)}, " ")
 }

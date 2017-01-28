@@ -1,29 +1,35 @@
 package socks
 
 import (
-	v2net "github.com/v2ray/v2ray-core/common/net"
+	"v2ray.com/core/common/net"
+	"v2ray.com/core/common/protocol"
 )
 
-const (
-	AuthTypeNoAuth   = byte(0)
-	AuthTypePassword = byte(1)
-)
-
-type Config struct {
-	AuthType   byte
-	Accounts   map[string]string
-	Address    v2net.Address
-	UDPEnabled bool
-	Timeout    int
+func (v *Account) Equals(another protocol.Account) bool {
+	if account, ok := another.(*Account); ok {
+		return v.Username == account.Username
+	}
+	return false
 }
 
-func (this *Config) HasAccount(username, password string) bool {
-	if this.Accounts == nil {
+func (v *Account) AsAccount() (protocol.Account, error) {
+	return v, nil
+}
+
+func (v *ServerConfig) HasAccount(username, password string) bool {
+	if v.Accounts == nil {
 		return false
 	}
-	storedPassed, found := this.Accounts[username]
+	storedPassed, found := v.Accounts[username]
 	if !found {
 		return false
 	}
 	return storedPassed == password
+}
+
+func (v *ServerConfig) GetNetAddress() net.Address {
+	if v.Address == nil {
+		return net.LocalHostIP
+	}
+	return v.Address.AsAddress()
 }

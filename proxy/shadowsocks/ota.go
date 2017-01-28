@@ -6,13 +6,13 @@ import (
 	"crypto/sha1"
 	"io"
 
-	"github.com/v2ray/v2ray-core/common/alloc"
-	"github.com/v2ray/v2ray-core/common/log"
-	"github.com/v2ray/v2ray-core/common/serial"
-	"github.com/v2ray/v2ray-core/transport"
+	"v2ray.com/core/common/buf"
+	"v2ray.com/core/common/errors"
+	"v2ray.com/core/common/serial"
 )
 
 const (
+	// AuthSize is the number of extra bytes for Shadowsocks OTA.
 	AuthSize = 10
 )
 
@@ -28,11 +28,13 @@ func NewAuthenticator(keygen KeyGenerator) *Authenticator {
 	}
 }
 
-func (this *Authenticator) Authenticate(auth []byte, data []byte) []byte {
-	hasher := hmac.New(sha1.New, this.key())
+func (v *Authenticator) Authenticate(data []byte) buf.Supplier {
+	hasher := hmac.New(sha1.New, v.key())
 	hasher.Write(data)
 	res := hasher.Sum(nil)
-	return append(auth, res[:AuthSize]...)
+	return func(b []byte) (int, error) {
+		return copy(b, res[:AuthSize]), nil
+	}
 }
 
 func HeaderKeyGenerator(key []byte, iv []byte) func() []byte {
@@ -45,12 +47,12 @@ func HeaderKeyGenerator(key []byte, iv []byte) func() []byte {
 }
 
 func ChunkKeyGenerator(iv []byte) func() []byte {
-	chunkId := 0
+	chunkID := 0
 	return func() []byte {
 		newKey := make([]byte, 0, len(iv)+4)
 		newKey = append(newKey, iv...)
-		newKey = serial.IntToBytes(chunkId, newKey)
-		chunkId++
+		newKey = serial.IntToBytes(chunkID, newKey)
+		chunkID++
 		return newKey
 	}
 }
@@ -67,36 +69,60 @@ func NewChunkReader(reader io.Reader, auth *Authenticator) *ChunkReader {
 	}
 }
 
-func (this *ChunkReader) Release() {
-	this.reader = nil
-	this.auth = nil
-}
-
-func (this *ChunkReader) Read() (*alloc.Buffer, error) {
-	buffer := alloc.NewLargeBuffer()
-	if _, err := io.ReadFull(this.reader, buffer.Value[:2]); err != nil {
+func (v *ChunkReader) Read() (*buf.Buffer, error) {
+	buffer := buf.New()
+	if err := buffer.AppendSupplier(buf.ReadFullFrom(v.reader, 2)); err != nil {
 		buffer.Release()
 		return nil, err
 	}
 	// There is a potential buffer overflow here. Large buffer is 64K bytes,
 	// while uin16 + 10 will be more than that
-	length := serial.BytesToUint16(buffer.Value[:2]) + AuthSize
-	if _, err := io.ReadFull(this.reader, buffer.Value[:length]); err != nil {
+	length := serial.BytesToUint16(buffer.BytesTo(2)) + AuthSize
+	if length > buf.Size {
+		// Theoretically the size of a chunk is 64K, but most Shadowsocks implementations used <4K buffer.
+		buffer.Release()
+		buffer = buf.NewLocal(int(length) + 128)
+	}
+
+	buffer.Clear()
+	if err := buffer.AppendSupplier(buf.ReadFullFrom(v.reader, int(length))); err != nil {
 		buffer.Release()
 		return nil, err
 	}
-	buffer.Slice(0, int(length))
 
-	authBytes := buffer.Value[:AuthSize]
-	payload := buffer.Value[AuthSize:]
+	authBytes := buffer.BytesTo(AuthSize)
+	payload := buffer.BytesFrom(AuthSize)
 
-	actualAuthBytes := this.auth.Authenticate(nil, payload)
+	actualAuthBytes := make([]byte, AuthSize)
+	v.auth.Authenticate(payload)(actualAuthBytes)
 	if !bytes.Equal(authBytes, actualAuthBytes) {
 		buffer.Release()
-		log.Debug("AuthenticationReader: Unexpected auth: ", authBytes)
-		return nil, transport.ErrCorruptedPacket
+		return nil, errors.New("Shadowsocks|AuthenticationReader: Invalid auth.")
 	}
 	buffer.SliceFrom(AuthSize)
 
 	return buffer, nil
+}
+
+type ChunkWriter struct {
+	writer io.Writer
+	auth   *Authenticator
+	buffer []byte
+}
+
+func NewChunkWriter(writer io.Writer, auth *Authenticator) *ChunkWriter {
+	return &ChunkWriter{
+		writer: writer,
+		auth:   auth,
+		buffer: make([]byte, 32*1024),
+	}
+}
+
+func (v *ChunkWriter) Write(payload *buf.Buffer) error {
+	totalLength := payload.Len()
+	serial.Uint16ToBytes(uint16(totalLength), v.buffer[:0])
+	v.auth.Authenticate(payload.Bytes())(v.buffer[2:])
+	copy(v.buffer[2+AuthSize:], payload.Bytes())
+	_, err := v.writer.Write(v.buffer[:2+AuthSize+payload.Len()])
+	return err
 }

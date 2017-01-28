@@ -1,17 +1,8 @@
 package log
 
 import (
-	"github.com/v2ray/v2ray-core/common/log/internal"
-)
-
-type LogLevel int
-
-const (
-	DebugLevel   = LogLevel(0)
-	InfoLevel    = LogLevel(1)
-	WarningLevel = LogLevel(2)
-	ErrorLevel   = LogLevel(3)
-	NoneLevel    = LogLevel(999)
+	"v2ray.com/core/common/errors"
+	"v2ray.com/core/common/log/internal"
 )
 
 var (
@@ -25,69 +16,64 @@ var (
 
 func SetLogLevel(level LogLevel) {
 	debugLogger = new(internal.NoOpLogWriter)
-	if level <= DebugLevel {
+	if level >= LogLevel_Debug {
 		debugLogger = streamLoggerInstance
 	}
 
 	infoLogger = new(internal.NoOpLogWriter)
-	if level <= InfoLevel {
+	if level >= LogLevel_Info {
 		infoLogger = streamLoggerInstance
 	}
 
 	warningLogger = new(internal.NoOpLogWriter)
-	if level <= WarningLevel {
+	if level >= LogLevel_Warning {
 		warningLogger = streamLoggerInstance
 	}
 
 	errorLogger = new(internal.NoOpLogWriter)
-	if level <= ErrorLevel {
+	if level >= LogLevel_Error {
 		errorLogger = streamLoggerInstance
-	}
-
-	if level == NoneLevel {
-		accessLoggerInstance = new(internal.NoOpLogWriter)
 	}
 }
 
 func InitErrorLogger(file string) error {
 	logger, err := internal.NewFileLogWriter(file)
 	if err != nil {
-		Error("Failed to create error logger on file (", file, "): ", err)
-		return err
+		return errors.Base(err).Message("Log: Failed to create error logger on file (", file, ")")
 	}
 	streamLoggerInstance = logger
 	return nil
 }
 
 // Debug outputs a debug log with given format and optional arguments.
-func Debug(v ...interface{}) {
+func Debug(val ...interface{}) {
 	debugLogger.Log(&internal.ErrorLog{
 		Prefix: "[Debug]",
-		Values: v,
+		Values: val,
 	})
 }
 
 // Info outputs an info log with given format and optional arguments.
-func Info(v ...interface{}) {
+func Info(val ...interface{}) {
 	infoLogger.Log(&internal.ErrorLog{
 		Prefix: "[Info]",
-		Values: v,
+		Values: val,
 	})
 }
 
 // Warning outputs a warning log with given format and optional arguments.
-func Warning(v ...interface{}) {
+func Warning(val ...interface{}) {
 	warningLogger.Log(&internal.ErrorLog{
 		Prefix: "[Warning]",
-		Values: v,
+		Values: val,
 	})
 }
 
 // Error outputs an error log with given format and optional arguments.
-func Error(v ...interface{}) {
+func Error(val ...interface{}) {
 	errorLogger.Log(&internal.ErrorLog{
 		Prefix: "[Error]",
-		Values: v,
+		Values: val,
 	})
 }
 

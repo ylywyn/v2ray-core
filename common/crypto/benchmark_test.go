@@ -4,7 +4,7 @@ import (
 	"crypto/cipher"
 	"testing"
 
-	. "github.com/v2ray/v2ray-core/common/crypto"
+	. "v2ray.com/core/common/crypto"
 )
 
 const benchSize = 1024 * 1024
@@ -13,6 +13,7 @@ func benchmarkStream(b *testing.B, c cipher.Stream) {
 	b.SetBytes(benchSize)
 	input := make([]byte, benchSize)
 	output := make([]byte, benchSize)
+	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
 		c.XORKeyStream(output, input)
 	}

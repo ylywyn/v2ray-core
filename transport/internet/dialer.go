@@ -1,81 +1,58 @@
 package internet
 
 import (
-	"crypto/tls"
-	"errors"
+	"context"
 	"net"
-	"time"
 
-	v2net "github.com/v2ray/v2ray-core/common/net"
-	v2tls "github.com/v2ray/v2ray-core/transport/internet/tls"
+	"v2ray.com/core/common/errors"
+	v2net "v2ray.com/core/common/net"
 )
+
+type Dialer func(ctx context.Context, dest v2net.Destination) (Connection, error)
 
 var (
-	ErrUnsupportedStreamType = errors.New("Unsupported stream type.")
+	transportDialerCache = make(map[TransportProtocol]Dialer)
 )
 
-type Dialer func(src v2net.Address, dest v2net.Destination) (Connection, error)
+func RegisterTransportDialer(protocol TransportProtocol, dialer Dialer) error {
+	if _, found := transportDialerCache[protocol]; found {
+		return errors.New("Internet|Dialer: ", protocol, " dialer already registered.")
+	}
+	transportDialerCache[protocol] = dialer
+	return nil
+}
 
-var (
-	TCPDialer    Dialer
-	KCPDialer    Dialer
-	RawTCPDialer Dialer
-	UDPDialer    Dialer
-)
-
-func Dial(src v2net.Address, dest v2net.Destination, settings *StreamSettings) (Connection, error) {
-	var connection Connection
-	var err error
-	if dest.IsTCP() {
-		switch {
-		case settings.IsCapableOf(StreamConnectionTypeTCP):
-			connection, err = TCPDialer(src, dest)
-		case settings.IsCapableOf(StreamConnectionTypeKCP):
-			connection, err = KCPDialer(src, dest)
-		case settings.IsCapableOf(StreamConnectionTypeRawTCP):
-			connection, err = RawTCPDialer(src, dest)
-		default:
-			return nil, ErrUnsupportedStreamType
-		}
+func Dial(ctx context.Context, dest v2net.Destination) (Connection, error) {
+	if dest.Network == v2net.Network_TCP {
+		streamSettings, _ := StreamSettingsFromContext(ctx)
+		protocol := streamSettings.GetEffectiveProtocol()
+		transportSettings, err := streamSettings.GetEffectiveTransportSettings()
 		if err != nil {
 			return nil, err
 		}
-		if settings.Security == StreamSecurityTypeNone {
-			return connection, nil
+		ctx = ContextWithTransportSettings(ctx, transportSettings)
+		if streamSettings != nil && streamSettings.HasSecuritySettings() {
+			securitySettings, err := streamSettings.GetEffectiveSecuritySettings()
+			if err != nil {
+				return nil, err
+			}
+			ctx = ContextWithSecuritySettings(ctx, securitySettings)
 		}
-
-		config := settings.TLSSettings.GetTLSConfig()
-		if dest.Address().IsDomain() {
-			config.ServerName = dest.Address().Domain()
+		dialer := transportDialerCache[protocol]
+		if dialer == nil {
+			return nil, errors.New("Internet|Dialer: ", protocol, " dialer not registered.")
 		}
-		tlsConn := tls.Client(connection, config)
-		return v2tls.NewConnection(tlsConn), nil
+		return dialer(ctx, dest)
 	}
 
-	return UDPDialer(src, dest)
+	udpDialer := transportDialerCache[TransportProtocol_UDP]
+	if udpDialer == nil {
+		return nil, errors.New("Internet|Dialer: UDP dialer not registered.")
+	}
+	return udpDialer(ctx, dest)
 }
 
-func DialToDest(src v2net.Address, dest v2net.Destination) (net.Conn, error) {
-	dialer := &net.Dialer{
-		Timeout:   time.Second * 60,
-		DualStack: true,
-	}
-
-	if src != nil && src != v2net.AnyIP {
-		var addr net.Addr
-		if dest.IsTCP() {
-			addr = &net.TCPAddr{
-				IP:   src.IP(),
-				Port: 0,
-			}
-		} else {
-			addr = &net.UDPAddr{
-				IP:   src.IP(),
-				Port: 0,
-			}
-		}
-		dialer.LocalAddr = addr
-	}
-
-	return dialer.Dial(dest.Network().String(), dest.NetAddr())
+// DialSystem calls system dialer to create a network connection.
+func DialSystem(src v2net.Address, dest v2net.Destination) (net.Conn, error) {
+	return effectiveSystemDialer.Dial(src, dest)
 }

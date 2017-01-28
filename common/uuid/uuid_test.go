@@ -3,8 +3,8 @@ package uuid_test
 import (
 	"testing"
 
-	. "github.com/v2ray/v2ray-core/common/uuid"
-	"github.com/v2ray/v2ray-core/testing/assert"
+	. "v2ray.com/core/common/uuid"
+	"v2ray.com/core/testing/assert"
 )
 
 func TestParseBytes(t *testing.T) {
@@ -18,7 +18,7 @@ func TestParseBytes(t *testing.T) {
 	assert.String(uuid.String()).Equals(str)
 
 	_, err = ParseBytes([]byte{1, 3, 2, 4})
-	assert.Error(err).Equals(ErrInvalidID)
+	assert.Error(err).IsNotNil()
 }
 
 func TestParseString(t *testing.T) {
@@ -32,7 +32,7 @@ func TestParseString(t *testing.T) {
 	assert.Bytes(uuid.Bytes()).Equals(expectedBytes)
 
 	uuid, err = ParseString("2418d087")
-	assert.Error(err).Equals(ErrInvalidID)
+	assert.Error(err).IsNotNil()
 
 	uuid, err = ParseString("2418d087-648k-4990-86e8-19dca1d006d3")
 	assert.Error(err).IsNotNil()

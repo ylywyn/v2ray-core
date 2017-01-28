@@ -4,12 +4,13 @@ import (
 	"fmt"
 	"net"
 
-	v2net "github.com/v2ray/v2ray-core/common/net"
+	v2net "v2ray.com/core/common/net"
 )
 
 type Server struct {
 	Port         v2net.Port
 	MsgProcessor func(msg []byte) []byte
+	SendFirst    []byte
 	accepting    bool
 	listener     *net.TCPListener
 }
@@ -21,8 +22,9 @@ func (server *Server) Start() (v2net.Destination, error) {
 		Zone: "",
 	})
 	if err != nil {
-		return nil, err
+		return v2net.Destination{}, err
 	}
+	server.Port = v2net.Port(listener.Addr().(*net.TCPAddr).Port)
 	server.listener = listener
 	go server.acceptConnections(listener)
 	localAddr := listener.Addr().(*net.TCPAddr)
@@ -34,7 +36,7 @@ func (server *Server) acceptConnections(listener *net.TCPListener) {
 	for server.accepting {
 		conn, err := listener.Accept()
 		if err != nil {
-			fmt.Printf("Failed accept TCP connection: %v", err)
+			fmt.Printf("Failed accept TCP connection: %v\n", err)
 			continue
 		}
 
@@ -43,6 +45,9 @@ func (server *Server) acceptConnections(listener *net.TCPListener) {
 }
 
 func (server *Server) handleConnection(conn net.Conn) {
+	if len(server.SendFirst) > 0 {
+		conn.Write(server.SendFirst)
+	}
 	request := make([]byte, 4096)
 	for true {
 		nBytes, err := conn.Read(request)
@@ -55,7 +60,7 @@ func (server *Server) handleConnection(conn net.Conn) {
 	conn.Close()
 }
 
-func (this *Server) Close() {
-	this.accepting = false
-	this.listener.Close()
+func (v *Server) Close() {
+	v.accepting = false
+	v.listener.Close()
 }

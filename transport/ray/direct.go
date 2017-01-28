@@ -3,25 +3,25 @@ package ray
 import (
 	"errors"
 	"io"
-	"sync"
+
 	"time"
 
-	"github.com/v2ray/v2ray-core/common/alloc"
+	"context"
+
+	"v2ray.com/core/common/buf"
 )
 
 const (
-	bufferSize = 128
+	bufferSize = 512
 )
 
-var (
-	ErrIOTimeout = errors.New("IO Timeout")
-)
+var ErrReadTimeout = errors.New("Ray: timeout.")
 
 // NewRay creates a new Ray for direct traffic transport.
-func NewRay() Ray {
+func NewRay(ctx context.Context) Ray {
 	return &directRay{
-		Input:  NewStream(),
-		Output: NewStream(),
+		Input:  NewStream(ctx),
+		Output: NewStream(ctx),
 	}
 }
 
@@ -30,103 +30,145 @@ type directRay struct {
 	Output *Stream
 }
 
-func (this *directRay) OutboundInput() InputStream {
-	return this.Input
+func (v *directRay) OutboundInput() InputStream {
+	return v.Input
 }
 
-func (this *directRay) OutboundOutput() OutputStream {
-	return this.Output
+func (v *directRay) OutboundOutput() OutputStream {
+	return v.Output
 }
 
-func (this *directRay) InboundInput() OutputStream {
-	return this.Input
+func (v *directRay) InboundInput() OutputStream {
+	return v.Input
 }
 
-func (this *directRay) InboundOutput() InputStream {
-	return this.Output
+func (v *directRay) InboundOutput() InputStream {
+	return v.Output
+}
+
+func (v *directRay) AddInspector(inspector Inspector) {
+	if inspector == nil {
+		return
+	}
+	v.Input.inspector.AddInspector(inspector)
+	v.Output.inspector.AddInspector(inspector)
 }
 
 type Stream struct {
-	access sync.RWMutex
-	closed bool
-	buffer chan *alloc.Buffer
+	buffer    chan *buf.Buffer
+	ctx       context.Context
+	close     chan bool
+	err       chan bool
+	inspector *InspectorChain
 }
 
-func NewStream() *Stream {
+func NewStream(ctx context.Context) *Stream {
 	return &Stream{
-		buffer: make(chan *alloc.Buffer, bufferSize),
+		ctx:       ctx,
+		buffer:    make(chan *buf.Buffer, bufferSize),
+		close:     make(chan bool),
+		err:       make(chan bool),
+		inspector: &InspectorChain{},
 	}
 }
 
-func (this *Stream) Read() (*alloc.Buffer, error) {
-	if this.buffer == nil {
-		return nil, io.EOF
-	}
-	this.access.RLock()
-	if this.buffer == nil {
-		this.access.RUnlock()
-		return nil, io.EOF
-	}
-	channel := this.buffer
-	this.access.RUnlock()
-	result, open := <-channel
-	if !open {
-		return nil, io.EOF
-	}
-	return result, nil
-}
-
-func (this *Stream) Write(data *alloc.Buffer) error {
-	if this.closed {
-		return io.EOF
-	}
-	for {
-		err := this.TryWriteOnce(data)
-		if err != ErrIOTimeout {
-			return err
+func (v *Stream) Read() (*buf.Buffer, error) {
+	select {
+	case <-v.ctx.Done():
+		return nil, io.ErrClosedPipe
+	case <-v.err:
+		return nil, io.ErrClosedPipe
+	case b := <-v.buffer:
+		return b, nil
+	default:
+		select {
+		case <-v.ctx.Done():
+			return nil, io.ErrClosedPipe
+		case b := <-v.buffer:
+			return b, nil
+		case <-v.close:
+			return nil, io.EOF
+		case <-v.err:
+			return nil, io.ErrClosedPipe
 		}
 	}
 }
 
-func (this *Stream) TryWriteOnce(data *alloc.Buffer) error {
-	this.access.RLock()
-	defer this.access.RUnlock()
-	if this.closed {
-		return io.EOF
-	}
+func (v *Stream) ReadTimeout(timeout time.Duration) (*buf.Buffer, error) {
 	select {
-	case this.buffer <- data:
-		return nil
-	case <-time.After(2 * time.Second):
-		return ErrIOTimeout
+	case <-v.ctx.Done():
+		return nil, io.ErrClosedPipe
+	case <-v.err:
+		return nil, io.ErrClosedPipe
+	case b := <-v.buffer:
+		return b, nil
+	default:
+		select {
+		case <-v.ctx.Done():
+			return nil, io.ErrClosedPipe
+		case b := <-v.buffer:
+			return b, nil
+		case <-v.close:
+			return nil, io.EOF
+		case <-v.err:
+			return nil, io.ErrClosedPipe
+		case <-time.After(timeout):
+			return nil, ErrReadTimeout
+		}
 	}
 }
 
-func (this *Stream) Close() {
-	if this.closed {
+func (v *Stream) Write(data *buf.Buffer) (err error) {
+	if data.IsEmpty() {
 		return
 	}
-	this.access.Lock()
-	defer this.access.Unlock()
-	if this.closed {
-		return
+
+	select {
+	case <-v.ctx.Done():
+		return io.ErrClosedPipe
+	case <-v.err:
+		return io.ErrClosedPipe
+	case <-v.close:
+		return io.ErrClosedPipe
+	default:
+		select {
+		case <-v.ctx.Done():
+			return io.ErrClosedPipe
+		case <-v.err:
+			return io.ErrClosedPipe
+		case <-v.close:
+			return io.ErrClosedPipe
+		case v.buffer <- data:
+			v.inspector.Input(data)
+			return nil
+		}
 	}
-	this.closed = true
-	close(this.buffer)
 }
 
-func (this *Stream) Release() {
-	if this.buffer == nil {
-		return
+func (v *Stream) Close() {
+	defer swallowPanic()
+
+	close(v.close)
+}
+
+func (v *Stream) CloseError() {
+	defer swallowPanic()
+
+	close(v.err)
+
+	n := len(v.buffer)
+	for i := 0; i < n; i++ {
+		select {
+		case b := <-v.buffer:
+			b.Release()
+		default:
+			return
+		}
 	}
-	this.Close()
-	this.access.Lock()
-	defer this.access.Unlock()
-	if this.buffer == nil {
-		return
-	}
-	for data := range this.buffer {
-		data.Release()
-	}
-	this.buffer = nil
+}
+
+func (v *Stream) Release() {}
+
+func swallowPanic() {
+	recover()
 }

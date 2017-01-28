@@ -1,73 +1,73 @@
 package kcp_test
 
 import (
-	"crypto/rand"
-	"io"
 	"net"
 	"testing"
 	"time"
 
-	v2net "github.com/v2ray/v2ray-core/common/net"
-	"github.com/v2ray/v2ray-core/testing/assert"
-	. "github.com/v2ray/v2ray-core/transport/internet/kcp"
+	"v2ray.com/core/testing/assert"
+	"v2ray.com/core/transport/internet/internal"
+	. "v2ray.com/core/transport/internet/kcp"
 )
 
-type NoOpWriteCloser struct{}
+type NoOpConn struct{}
 
-func (this *NoOpWriteCloser) Write(b []byte) (int, error) {
+func (o *NoOpConn) Overhead() int {
+	return 0
+}
+
+func (o *NoOpConn) Write(b []byte) (int, error) {
 	return len(b), nil
 }
 
-func (this *NoOpWriteCloser) Close() error {
+func (o *NoOpConn) Close() error {
 	return nil
 }
+
+func (o *NoOpConn) Read([]byte) (int, error) {
+	panic("Should not be called.")
+}
+
+func (o *NoOpConn) LocalAddr() net.Addr {
+	return nil
+}
+
+func (o *NoOpConn) RemoteAddr() net.Addr {
+	return nil
+}
+
+func (o *NoOpConn) SetDeadline(time.Time) error {
+	return nil
+}
+
+func (o *NoOpConn) SetReadDeadline(time.Time) error {
+	return nil
+}
+
+func (o *NoOpConn) SetWriteDeadline(time.Time) error {
+	return nil
+}
+
+func (o *NoOpConn) Id() internal.ConnectionID {
+	return internal.ConnectionID{}
+}
+
+func (o *NoOpConn) Reset(input func([]Segment)) {}
+
+type NoOpRecycler struct{}
+
+func (o *NoOpRecycler) Put(internal.ConnectionID, net.Conn) {}
 
 func TestConnectionReadTimeout(t *testing.T) {
 	assert := assert.On(t)
 
-	conn := NewConnection(1, &NoOpWriteCloser{}, nil, nil, NewSimpleAuthenticator())
+	conn := NewConnection(1, &NoOpConn{}, &NoOpRecycler{}, &Config{})
 	conn.SetReadDeadline(time.Now().Add(time.Second))
 
 	b := make([]byte, 1024)
 	nBytes, err := conn.Read(b)
 	assert.Int(nBytes).Equals(0)
 	assert.Error(err).IsNotNil()
-}
 
-func TestConnectionReadWrite(t *testing.T) {
-	assert := assert.On(t)
-
-	upReader, upWriter := io.Pipe()
-	downReader, downWriter := io.Pipe()
-
-	connClient := NewConnection(1, upWriter, &net.UDPAddr{IP: v2net.LocalHostIP.IP(), Port: 1}, &net.UDPAddr{IP: v2net.LocalHostIP.IP(), Port: 2}, NewSimpleAuthenticator())
-	go connClient.FetchInputFrom(downReader)
-
-	connServer := NewConnection(1, downWriter, &net.UDPAddr{IP: v2net.LocalHostIP.IP(), Port: 2}, &net.UDPAddr{IP: v2net.LocalHostIP.IP(), Port: 1}, NewSimpleAuthenticator())
-	go connServer.FetchInputFrom(upReader)
-
-	totalWritten := 1024 * 1024
-	clientSend := make([]byte, totalWritten)
-	rand.Read(clientSend)
-	go func() {
-		nBytes, err := connClient.Write(clientSend)
-		assert.Int(nBytes).Equals(totalWritten)
-		assert.Error(err).IsNil()
-	}()
-
-	serverReceived := make([]byte, totalWritten)
-	totalRead := 0
-	for totalRead < totalWritten {
-		nBytes, err := connServer.Read(serverReceived[totalRead:])
-		assert.Error(err).IsNil()
-		totalRead += nBytes
-	}
-	assert.Bytes(serverReceived).Equals(clientSend)
-
-	connClient.Close()
-	connServer.Close()
-
-	for connClient.State() != StateTerminated || connServer.State() != StateTerminated {
-		time.Sleep(time.Second)
-	}
+	conn.Terminate()
 }

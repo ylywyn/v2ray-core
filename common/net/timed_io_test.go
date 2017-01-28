@@ -3,17 +3,17 @@ package net_test
 import (
 	"testing"
 
-	. "github.com/v2ray/v2ray-core/common/net"
-	"github.com/v2ray/v2ray-core/testing/assert"
+	. "v2ray.com/core/common/net"
+	"v2ray.com/core/testing/assert"
 )
 
 func TestTimeOutSettings(t *testing.T) {
 	assert := assert.On(t)
 
 	reader := NewTimeOutReader(8, nil)
-	assert.Int(reader.GetTimeOut()).Equals(8)
+	assert.Uint32(reader.GetTimeOut()).Equals(8)
 	reader.SetTimeOut(8) // no op
-	assert.Int(reader.GetTimeOut()).Equals(8)
+	assert.Uint32(reader.GetTimeOut()).Equals(8)
 	reader.SetTimeOut(9)
-	assert.Int(reader.GetTimeOut()).Equals(9)
+	assert.Uint32(reader.GetTimeOut()).Equals(9)
 }

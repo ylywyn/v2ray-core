@@ -1,86 +1,99 @@
 package freedom
 
 import (
+	"context"
 	"io"
-	"sync"
 
-	"github.com/v2ray/v2ray-core/app"
-	"github.com/v2ray/v2ray-core/app/dns"
-	"github.com/v2ray/v2ray-core/common/alloc"
-	"github.com/v2ray/v2ray-core/common/dice"
-	v2io "github.com/v2ray/v2ray-core/common/io"
-	"github.com/v2ray/v2ray-core/common/log"
-	v2net "github.com/v2ray/v2ray-core/common/net"
-	"github.com/v2ray/v2ray-core/common/retry"
-	"github.com/v2ray/v2ray-core/proxy"
-	"github.com/v2ray/v2ray-core/proxy/internal"
-	"github.com/v2ray/v2ray-core/transport/internet"
-	"github.com/v2ray/v2ray-core/transport/internet/tcp"
-	"github.com/v2ray/v2ray-core/transport/ray"
+	"v2ray.com/core/app"
+	"v2ray.com/core/app/dns"
+	"v2ray.com/core/common"
+	"v2ray.com/core/common/buf"
+	"v2ray.com/core/common/dice"
+	"v2ray.com/core/common/errors"
+	"v2ray.com/core/common/log"
+	"v2ray.com/core/common/net"
+	"v2ray.com/core/common/retry"
+	"v2ray.com/core/common/signal"
+	"v2ray.com/core/proxy"
+	"v2ray.com/core/transport/internet"
+	"v2ray.com/core/transport/ray"
 )
 
-type FreedomConnection struct {
-	domainStrategy DomainStrategy
+type Handler struct {
+	domainStrategy Config_DomainStrategy
 	timeout        uint32
 	dns            dns.Server
-	meta           *proxy.OutboundHandlerMeta
+	destOverride   *DestinationOverride
 }
 
-func NewFreedomConnection(config *Config, space app.Space, meta *proxy.OutboundHandlerMeta) *FreedomConnection {
-	f := &FreedomConnection{
+func New(ctx context.Context, config *Config) (*Handler, error) {
+	space := app.SpaceFromContext(ctx)
+	if space == nil {
+		return nil, errors.New("Freedom: No space in context.")
+	}
+	f := &Handler{
 		domainStrategy: config.DomainStrategy,
 		timeout:        config.Timeout,
-		meta:           meta,
+		destOverride:   config.DestinationOverride,
 	}
-	space.InitializeApplication(func() error {
-		if config.DomainStrategy == DomainStrategyUseIP {
-			if !space.HasApp(dns.APP_ID) {
-				log.Error("Freedom: DNS server is not found in the space.")
-				return app.ErrMissingApplication
+	space.OnInitialize(func() error {
+		if config.DomainStrategy == Config_USE_IP {
+			f.dns = dns.FromSpace(space)
+			if f.dns == nil {
+				return errors.New("Freedom: DNS server is not found in the space.")
 			}
-			f.dns = space.GetApp(dns.APP_ID).(dns.Server)
 		}
 		return nil
 	})
-	return f
+	return f, nil
 }
 
-// @Private
-func (this *FreedomConnection) ResolveIP(destination v2net.Destination) v2net.Destination {
-	if !destination.Address().IsDomain() {
+// Private: Visible for testing.
+func (v *Handler) ResolveIP(destination net.Destination) net.Destination {
+	if !destination.Address.Family().IsDomain() {
 		return destination
 	}
 
-	ips := this.dns.Get(destination.Address().Domain())
+	ips := v.dns.Get(destination.Address.Domain())
 	if len(ips) == 0 {
 		log.Info("Freedom: DNS returns nil answer. Keep domain as is.")
 		return destination
 	}
 
 	ip := ips[dice.Roll(len(ips))]
-	var newDest v2net.Destination
-	if destination.IsTCP() {
-		newDest = v2net.TCPDestination(v2net.IPAddress(ip), destination.Port())
+	var newDest net.Destination
+	if destination.Network == net.Network_TCP {
+		newDest = net.TCPDestination(net.IPAddress(ip), destination.Port)
 	} else {
-		newDest = v2net.UDPDestination(v2net.IPAddress(ip), destination.Port())
+		newDest = net.UDPDestination(net.IPAddress(ip), destination.Port)
 	}
 	log.Info("Freedom: Changing destination from ", destination, " to ", newDest)
 	return newDest
 }
 
-func (this *FreedomConnection) Dispatch(destination v2net.Destination, payload *alloc.Buffer, ray ray.OutboundRay) error {
+func (v *Handler) Process(ctx context.Context, outboundRay ray.OutboundRay) error {
+	destination := proxy.DestinationFromContext(ctx)
+	if v.destOverride != nil {
+		server := v.destOverride.Server
+		destination = net.Destination{
+			Network: destination.Network,
+			Address: server.Address.AsAddress(),
+			Port:    net.Port(server.Port),
+		}
+	}
 	log.Info("Freedom: Opening connection to ", destination)
 
-	defer payload.Release()
-	defer ray.OutboundInput().Release()
-	defer ray.OutboundOutput().Close()
+	input := outboundRay.OutboundInput()
+	output := outboundRay.OutboundOutput()
 
 	var conn internet.Connection
-	if this.domainStrategy == DomainStrategyUseIP && destination.Address().IsDomain() {
-		destination = this.ResolveIP(destination)
+	if v.domainStrategy == Config_USE_IP && destination.Address.Family().IsDomain() {
+		destination = v.ResolveIP(destination)
 	}
-	err := retry.Timed(5, 100).On(func() error {
-		rawConn, err := internet.Dial(this.meta.Address, destination, this.meta.StreamSettings)
+
+	dialer := proxy.DialerFromContext(ctx)
+	err := retry.ExponentialBackoff(5, 100).On(func() error {
+		rawConn, err := dialer.Dial(ctx, destination)
 		if err != nil {
 			return err
 		}
@@ -93,61 +106,48 @@ func (this *FreedomConnection) Dispatch(destination v2net.Destination, payload *
 	}
 	defer conn.Close()
 
-	input := ray.OutboundInput()
-	output := ray.OutboundOutput()
-	var readMutex, writeMutex sync.Mutex
-	readMutex.Lock()
-	writeMutex.Lock()
+	conn.SetReusable(false)
 
-	conn.Write(payload.Value)
-
-	go func() {
-		v2writer := v2io.NewAdaptiveWriter(conn)
-		defer v2writer.Release()
-
-		v2io.Pipe(input, v2writer)
-		writeMutex.Unlock()
-	}()
-
-	go func() {
-		defer readMutex.Unlock()
-
-		var reader io.Reader = conn
-
-		timeout := this.timeout
-		if destination.IsUDP() {
-			timeout = 16
+	requestDone := signal.ExecuteAsync(func() error {
+		v2writer := buf.NewWriter(conn)
+		if err := buf.PipeUntilEOF(input, v2writer); err != nil {
+			return err
 		}
-		if timeout > 0 {
-			reader = v2net.NewTimeOutReader(int(timeout) /* seconds */, conn)
-		}
+		return nil
+	})
 
-		v2reader := v2io.NewAdaptiveReader(reader)
-		defer v2reader.Release()
+	var reader io.Reader = conn
 
-		v2io.Pipe(v2reader, output)
-		ray.OutboundOutput().Close()
-	}()
-
-	writeMutex.Lock()
-	if tcpConn, ok := conn.(*tcp.RawConnection); ok {
-		tcpConn.CloseWrite()
+	timeout := v.timeout
+	if destination.Network == net.Network_UDP {
+		timeout = 16
 	}
-	readMutex.Lock()
+	if timeout > 0 {
+		reader = net.NewTimeOutReader(timeout /* seconds */, conn)
+	}
+
+	responseDone := signal.ExecuteAsync(func() error {
+		defer output.Close()
+
+		v2reader := buf.NewReader(reader)
+		if err := buf.PipeUntilEOF(v2reader, output); err != nil {
+			return err
+		}
+		return nil
+	})
+
+	if err := signal.ErrorOrFinish2(requestDone, responseDone); err != nil {
+		log.Info("Freedom: Connection ending with ", err)
+		input.CloseError()
+		output.CloseError()
+		return err
+	}
 
 	return nil
 }
 
-type FreedomFactory struct{}
-
-func (this *FreedomFactory) StreamCapability() internet.StreamConnectionType {
-	return internet.StreamConnectionTypeRawTCP
-}
-
-func (this *FreedomFactory) Create(space app.Space, config interface{}, meta *proxy.OutboundHandlerMeta) (proxy.OutboundHandler, error) {
-	return NewFreedomConnection(config.(*Config), space, meta), nil
-}
-
 func init() {
-	internal.MustRegisterOutboundHandlerCreator("freedom", new(FreedomFactory))
+	common.Must(common.RegisterConfig((*Config)(nil), func(ctx context.Context, config interface{}) (interface{}, error) {
+		return New(ctx, config.(*Config))
+	}))
 }

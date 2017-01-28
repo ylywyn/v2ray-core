@@ -1,20 +1,11 @@
 package protocol
 
-import (
-	"github.com/v2ray/v2ray-core/common/dice"
-)
-
+// Account is an user identity used for authentication.
 type Account interface {
+	Equals(Account) bool
 }
 
-type VMessAccount struct {
-	ID       *ID
-	AlterIDs []*ID
-}
-
-func (this *VMessAccount) AnyValidID() *ID {
-	if len(this.AlterIDs) == 0 {
-		return this.ID
-	}
-	return this.AlterIDs[dice.Roll(len(this.AlterIDs))]
+// AsAccount is an object can be converted into account.
+type AsAccount interface {
+	AsAccount() (Account, error)
 }

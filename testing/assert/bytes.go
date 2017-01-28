@@ -3,14 +3,14 @@ package assert
 import (
 	"bytes"
 
-	"github.com/v2ray/v2ray-core/common/serial"
+	"v2ray.com/core/common/serial"
 )
 
-func (this *Assert) Bytes(value []byte) *BytesSubject {
+func (v *Assert) Bytes(value []byte) *BytesSubject {
 	return &BytesSubject{
 		Subject: Subject{
 			disp: serial.BytesToHexString(value),
-			a:    this,
+			a:    v,
 		},
 		value: value,
 	}

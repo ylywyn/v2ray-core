@@ -4,7 +4,7 @@ import (
 	"fmt"
 	"net"
 
-	v2net "github.com/v2ray/v2ray-core/common/net"
+	v2net "v2ray.com/core/common/net"
 )
 
 type Server struct {
@@ -21,8 +21,9 @@ func (server *Server) Start() (v2net.Destination, error) {
 		Zone: "",
 	})
 	if err != nil {
-		return nil, err
+		return v2net.Destination{}, err
 	}
+	server.Port = v2net.Port(conn.LocalAddr().(*net.UDPAddr).Port)
 	server.conn = conn
 	go server.handleConnection(conn)
 	localAddr := conn.LocalAddr().(*net.UDPAddr)

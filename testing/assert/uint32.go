@@ -1,13 +1,13 @@
 package assert
 
 import (
-	"github.com/v2ray/v2ray-core/common/serial"
+	"v2ray.com/core/common/serial"
 )
 
-func (this *Assert) Uint32(value uint32) *Uint32Subject {
+func (v *Assert) Uint32(value uint32) *Uint32Subject {
 	return &Uint32Subject{
 		Subject: Subject{
-			a:    this,
+			a:    v,
 			disp: serial.Uint32ToString(value),
 		},
 		value: value,

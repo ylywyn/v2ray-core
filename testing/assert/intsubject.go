@@ -1,13 +1,13 @@
 package assert
 
 import (
-	"github.com/v2ray/v2ray-core/common/serial"
+	"v2ray.com/core/common/serial"
 )
 
-func (this *Assert) Int(value int) *IntSubject {
+func (v *Assert) Int(value int) *IntSubject {
 	return &IntSubject{
 		Subject: Subject{
-			a:    this,
+			a:    v,
 			disp: serial.IntToString(value),
 		},
 		value: value,

@@ -5,47 +5,45 @@ import (
 	"crypto/md5"
 	"crypto/rand"
 	"encoding/hex"
-	"errors"
+	"v2ray.com/core/common/errors"
 )
 
 var (
 	byteGroups = []int{8, 4, 4, 4, 12}
-
-	ErrInvalidID = errors.New("Invalid ID.")
 )
 
 type UUID [16]byte
 
 // String returns the string representation of this UUID.
-func (this *UUID) String() string {
-	return bytesToString(this.Bytes())
+func (v *UUID) String() string {
+	return bytesToString(v.Bytes())
 }
 
 // Bytes returns the bytes representation of this UUID.
-func (this *UUID) Bytes() []byte {
-	return this[:]
+func (v *UUID) Bytes() []byte {
+	return v[:]
 }
 
 // Equals returns true if this UUID equals another UUID by value.
-func (this *UUID) Equals(another *UUID) bool {
-	if this == nil && another == nil {
+func (v *UUID) Equals(another *UUID) bool {
+	if v == nil && another == nil {
 		return true
 	}
-	if this == nil || another == nil {
+	if v == nil || another == nil {
 		return false
 	}
-	return bytes.Equal(this.Bytes(), another.Bytes())
+	return bytes.Equal(v.Bytes(), another.Bytes())
 }
 
 // Next generates a deterministic random UUID based on this UUID.
-func (this *UUID) Next() *UUID {
+func (v *UUID) Next() *UUID {
 	md5hash := md5.New()
-	md5hash.Write(this.Bytes())
+	md5hash.Write(v.Bytes())
 	md5hash.Write([]byte("16167dc8-16b6-4e6d-b8bb-65dd68113a81"))
 	newid := new(UUID)
 	for {
 		md5hash.Sum(newid[:0])
-		if !newid.Equals(this) {
+		if !newid.Equals(v) {
 			return newid
 		}
 		md5hash.Write([]byte("533eff8a-4113-4b10-b5ce-0f5d76b98cd2"))
@@ -74,7 +72,7 @@ func New() *UUID {
 // PraseBytes converts an UUID in byte form to object.
 func ParseBytes(b []byte) (*UUID, error) {
 	if len(b) != 16 {
-		return nil, ErrInvalidID
+		return nil, errors.New("Invalid UUID: ", b)
 	}
 	uuid := new(UUID)
 	copy(uuid[:], b)
@@ -85,7 +83,7 @@ func ParseBytes(b []byte) (*UUID, error) {
 func ParseString(str string) (*UUID, error) {
 	text := []byte(str)
 	if len(text) < 32 {
-		return nil, ErrInvalidID
+		return nil, errors.New("Invalid UUID: ", str)
 	}
 
 	uuid := new(UUID)

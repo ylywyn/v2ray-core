@@ -3,7 +3,7 @@ package tcp
 import (
 	"net/http"
 
-	v2net "github.com/v2ray/v2ray-core/common/net"
+	v2net "v2ray.com/core/common/net"
 )
 
 type Server struct {
@@ -31,6 +31,6 @@ func (server *Server) Start() (v2net.Destination, error) {
 	return v2net.TCPDestination(v2net.LocalHostIP, v2net.Port(server.Port)), nil
 }
 
-func (this *Server) Close() {
-	this.accepting = false
+func (v *Server) Close() {
+	v.accepting = false
 }

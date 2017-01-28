@@ -1,24 +1,37 @@
 package kcp_test
 
 import (
+	"context"
 	"crypto/rand"
 	"io"
+	"net"
 	"sync"
 	"testing"
 	"time"
 
-	v2net "github.com/v2ray/v2ray-core/common/net"
-	v2nettesting "github.com/v2ray/v2ray-core/common/net/testing"
-	"github.com/v2ray/v2ray-core/testing/assert"
-	. "github.com/v2ray/v2ray-core/transport/internet/kcp"
+	v2net "v2ray.com/core/common/net"
+	"v2ray.com/core/common/serial"
+	"v2ray.com/core/testing/assert"
+	"v2ray.com/core/transport/internet"
+	. "v2ray.com/core/transport/internet/kcp"
 )
 
 func TestDialAndListen(t *testing.T) {
 	assert := assert.On(t)
 
-	port := v2nettesting.PickPort()
-	listerner, err := NewListener(v2net.LocalHostIP, port)
+	listerner, err := NewListener(v2net.LocalHostIP, v2net.Port(0), internet.ListenOptions{
+		Stream: &internet.StreamConfig{
+			Protocol: internet.TransportProtocol_MKCP,
+			TransportSettings: []*internet.TransportConfig{
+				{
+					Protocol: internet.TransportProtocol_MKCP,
+					Settings: serial.ToTypedMessage(&Config{}),
+				},
+			},
+		},
+	})
 	assert.Error(err).IsNil()
+	port := v2net.Port(listerner.Addr().(*net.UDPAddr).Port)
 
 	go func() {
 		for {
@@ -43,9 +56,10 @@ func TestDialAndListen(t *testing.T) {
 		}
 	}()
 
+	ctx := internet.ContextWithTransportSettings(context.Background(), &Config{})
 	wg := new(sync.WaitGroup)
 	for i := 0; i < 10; i++ {
-		clientConn, err := DialKCP(v2net.LocalHostIP, v2net.UDPDestination(v2net.LocalHostIP, port))
+		clientConn, err := DialKCP(ctx, v2net.UDPDestination(v2net.LocalHostIP, port))
 		assert.Error(err).IsNil()
 		wg.Add(1)
 
@@ -70,7 +84,9 @@ func TestDialAndListen(t *testing.T) {
 	}
 
 	wg.Wait()
-	time.Sleep(15 * time.Second)
+	for i := 0; i < 60 && listerner.ActiveConnections() > 0; i++ {
+		time.Sleep(500 * time.Millisecond)
+	}
 	assert.Int(listerner.ActiveConnections()).Equals(0)
 
 	listerner.Close()

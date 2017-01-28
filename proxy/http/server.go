@@ -1,7 +1,7 @@
 package http
 
 import (
-	"bufio"
+	"context"
 	"io"
 	"net"
 	"net/http"
@@ -9,64 +9,49 @@ import (
 	"strings"
 	"sync"
 
-	"github.com/v2ray/v2ray-core/app"
-	"github.com/v2ray/v2ray-core/app/dispatcher"
-	v2io "github.com/v2ray/v2ray-core/common/io"
-	"github.com/v2ray/v2ray-core/common/log"
-	v2net "github.com/v2ray/v2ray-core/common/net"
-	"github.com/v2ray/v2ray-core/proxy"
-	"github.com/v2ray/v2ray-core/proxy/internal"
-	"github.com/v2ray/v2ray-core/transport/internet"
-	"github.com/v2ray/v2ray-core/transport/ray"
+	"v2ray.com/core/app"
+	"v2ray.com/core/app/dispatcher"
+	"v2ray.com/core/common"
+	"v2ray.com/core/common/buf"
+	"v2ray.com/core/common/bufio"
+	"v2ray.com/core/common/errors"
+	"v2ray.com/core/common/log"
+	v2net "v2ray.com/core/common/net"
+	"v2ray.com/core/common/signal"
+	"v2ray.com/core/proxy"
+	"v2ray.com/core/transport/internet"
 )
 
 // Server is a HTTP proxy server.
 type Server struct {
 	sync.Mutex
-	accepting        bool
-	packetDispatcher dispatcher.PacketDispatcher
-	config           *Config
-	tcpListener      *internet.TCPHub
-	meta             *proxy.InboundHandlerMeta
+	packetDispatcher dispatcher.Interface
+	config           *ServerConfig
 }
 
-func NewServer(config *Config, packetDispatcher dispatcher.PacketDispatcher, meta *proxy.InboundHandlerMeta) *Server {
-	return &Server{
-		packetDispatcher: packetDispatcher,
-		config:           config,
-		meta:             meta,
+// NewServer creates a new HTTP inbound handler.
+func NewServer(ctx context.Context, config *ServerConfig) (*Server, error) {
+	space := app.SpaceFromContext(ctx)
+	if space == nil {
+		return nil, errors.New("HTTP|Server: No space in context.")
 	}
-}
-
-func (this *Server) Port() v2net.Port {
-	return this.meta.Port
-}
-
-func (this *Server) Close() {
-	this.accepting = false
-	if this.tcpListener != nil {
-		this.Lock()
-		this.tcpListener.Close()
-		this.tcpListener = nil
-		this.Unlock()
+	s := &Server{
+		config: config,
 	}
-}
-
-func (this *Server) Start() error {
-	if this.accepting {
+	space.OnInitialize(func() error {
+		s.packetDispatcher = dispatcher.FromSpace(space)
+		if s.packetDispatcher == nil {
+			return errors.New("HTTP|Server: Dispatcher not found in space.")
+		}
 		return nil
-	}
+	})
+	return s, nil
+}
 
-	tcpListener, err := internet.ListenTCP(this.meta.Address, this.meta.Port, this.handleConnection, this.meta.StreamSettings)
-	if err != nil {
-		log.Error("HTTP: Failed listen on ", this.meta.Address, ":", this.meta.Port, ": ", err)
-		return err
+func (*Server) Network() v2net.NetworkList {
+	return v2net.NetworkList{
+		Network: []v2net.Network{v2net.Network_TCP},
 	}
-	this.Lock()
-	this.tcpListener = tcpListener
-	this.Unlock()
-	this.accepting = true
-	return nil
 }
 
 func parseHost(rawHost string, defaultPort v2net.Port) (v2net.Destination, error) {
@@ -76,12 +61,12 @@ func parseHost(rawHost string, defaultPort v2net.Port) (v2net.Destination, error
 		if addrError, ok := err.(*net.AddrError); ok && strings.Contains(addrError.Err, "missing port") {
 			host = rawHost
 		} else {
-			return nil, err
+			return v2net.Destination{}, err
 		}
 	} else {
 		intPort, err := strconv.Atoi(rawPort)
 		if err != nil {
-			return nil, err
+			return v2net.Destination{}, err
 		}
 		port = v2net.Port(intPort)
 	}
@@ -92,17 +77,18 @@ func parseHost(rawHost string, defaultPort v2net.Port) (v2net.Destination, error
 	return v2net.TCPDestination(v2net.DomainAddress(host), port), nil
 }
 
-func (this *Server) handleConnection(conn internet.Connection) {
-	defer conn.Close()
-	timedReader := v2net.NewTimeOutReader(this.config.Timeout, conn)
-	reader := bufio.NewReaderSize(timedReader, 2048)
+func (s *Server) Process(ctx context.Context, network v2net.Network, conn internet.Connection) error {
+	conn.SetReusable(false)
+
+	timedReader := v2net.NewTimeOutReader(s.config.Timeout, conn)
+	reader := bufio.OriginalReaderSize(timedReader, 2048)
 
 	request, err := http.ReadRequest(reader)
 	if err != nil {
-		if err != io.EOF {
+		if errors.Cause(err) != io.EOF {
 			log.Warning("HTTP: Failed to read http request: ", err)
 		}
-		return
+		return err
 	}
 	log.Info("HTTP: Request to Method [", request.Method, "] Host [", request.Host, "] with URL [", request.URL, "]")
 	defaultPort := v2net.Port(80)
@@ -116,17 +102,18 @@ func (this *Server) handleConnection(conn internet.Connection) {
 	dest, err := parseHost(host, defaultPort)
 	if err != nil {
 		log.Warning("HTTP: Malformed proxy host (", host, "): ", err)
-		return
+		return err
 	}
 	log.Access(conn.RemoteAddr(), request.URL, log.AccessAccepted, "")
+	ctx = proxy.ContextWithDestination(ctx, dest)
 	if strings.ToUpper(request.Method) == "CONNECT" {
-		this.handleConnect(request, dest, reader, conn)
+		return s.handleConnect(ctx, request, reader, conn)
 	} else {
-		this.handlePlainHTTP(request, dest, reader, conn)
+		return s.handlePlainHTTP(ctx, request, reader, conn)
 	}
 }
 
-func (this *Server) handleConnect(request *http.Request, destination v2net.Destination, reader io.Reader, writer io.Writer) {
+func (s *Server) handleConnect(ctx context.Context, request *http.Request, reader io.Reader, writer io.Writer) error {
 	response := &http.Response{
 		Status:        "200 OK",
 		StatusCode:    200,
@@ -138,34 +125,39 @@ func (this *Server) handleConnect(request *http.Request, destination v2net.Desti
 		ContentLength: 0,
 		Close:         false,
 	}
-	response.Write(writer)
+	if err := response.Write(writer); err != nil {
+		log.Warning("HTTP|Server: failed to write back OK response: ", err)
+		return err
+	}
 
-	ray := this.packetDispatcher.DispatchToOutbound(destination)
-	this.transport(reader, writer, ray)
-}
+	ray := s.packetDispatcher.DispatchToOutbound(ctx)
 
-func (this *Server) transport(input io.Reader, output io.Writer, ray ray.InboundRay) {
-	var wg sync.WaitGroup
-	wg.Add(2)
-	defer wg.Wait()
+	requestDone := signal.ExecuteAsync(func() error {
+		defer ray.InboundInput().Close()
 
-	go func() {
-		v2reader := v2io.NewAdaptiveReader(input)
-		defer v2reader.Release()
+		v2reader := buf.NewReader(reader)
+		if err := buf.PipeUntilEOF(v2reader, ray.InboundInput()); err != nil {
+			return err
+		}
+		return nil
+	})
 
-		v2io.Pipe(v2reader, ray.InboundInput())
-		ray.InboundInput().Close()
-		wg.Done()
-	}()
+	responseDone := signal.ExecuteAsync(func() error {
+		v2writer := buf.NewWriter(writer)
+		if err := buf.PipeUntilEOF(ray.InboundOutput(), v2writer); err != nil {
+			return err
+		}
+		return nil
+	})
 
-	go func() {
-		v2writer := v2io.NewAdaptiveWriter(output)
-		defer v2writer.Release()
+	if err := signal.ErrorOrFinish2(requestDone, responseDone); err != nil {
+		log.Info("HTTP|Server: Connection ends with: ", err)
+		ray.InboundInput().CloseError()
+		ray.InboundOutput().CloseError()
+		return err
+	}
 
-		v2io.Pipe(ray.InboundOutput(), v2writer)
-		ray.InboundOutput().Release()
-		wg.Done()
-	}()
+	return nil
 }
 
 // @VisibleForTesting
@@ -193,7 +185,7 @@ func StripHopByHopHeaders(request *http.Request) {
 	}
 }
 
-func (this *Server) GenerateResponse(statusCode int, status string) *http.Response {
+func generateResponse(statusCode int, status string) *http.Response {
 	hdr := http.Header(make(map[string][]string))
 	hdr.Set("Connection", "close")
 	return &http.Response{
@@ -205,74 +197,67 @@ func (this *Server) GenerateResponse(statusCode int, status string) *http.Respon
 		Header:        hdr,
 		Body:          nil,
 		ContentLength: 0,
-		Close:         false,
+		Close:         true,
 	}
 }
 
-func (this *Server) handlePlainHTTP(request *http.Request, dest v2net.Destination, reader *bufio.Reader, writer io.Writer) {
+func (s *Server) handlePlainHTTP(ctx context.Context, request *http.Request, reader io.Reader, writer io.Writer) error {
 	if len(request.URL.Host) <= 0 {
-		response := this.GenerateResponse(400, "Bad Request")
-		response.Write(writer)
-
-		return
+		response := generateResponse(400, "Bad Request")
+		return response.Write(writer)
 	}
 
 	request.Host = request.URL.Host
 	StripHopByHopHeaders(request)
 
-	ray := this.packetDispatcher.DispatchToOutbound(dest)
-	defer ray.InboundInput().Close()
-	defer ray.InboundOutput().Release()
+	ray := s.packetDispatcher.DispatchToOutbound(ctx)
+	input := ray.InboundInput()
+	output := ray.InboundOutput()
 
-	var finish sync.WaitGroup
-	finish.Add(1)
-	go func() {
-		defer finish.Done()
-		requestWriter := v2io.NewBufferedWriter(v2io.NewChainWriter(ray.InboundInput()))
+	requestDone := signal.ExecuteAsync(func() error {
+		defer input.Close()
+
+		requestWriter := bufio.NewWriter(buf.NewBytesWriter(ray.InboundInput()))
 		err := request.Write(requestWriter)
 		if err != nil {
-			log.Warning("HTTP: Failed to write request: ", err)
-			return
+			return err
 		}
-		requestWriter.Flush()
-	}()
+		if err := requestWriter.Flush(); err != nil {
+			return err
+		}
+		return nil
+	})
 
-	finish.Add(1)
-	go func() {
-		defer finish.Done()
-		responseReader := bufio.NewReader(v2io.NewChanReader(ray.InboundOutput()))
+	responseDone := signal.ExecuteAsync(func() error {
+		responseReader := bufio.OriginalReader(buf.NewBytesReader(ray.InboundOutput()))
 		response, err := http.ReadResponse(responseReader, request)
 		if err != nil {
 			log.Warning("HTTP: Failed to read response: ", err)
-			response = this.GenerateResponse(503, "Service Unavailable")
+			response = generateResponse(503, "Service Unavailable")
 		}
-		responseWriter := v2io.NewBufferedWriter(writer)
-		err = response.Write(responseWriter)
-		if err != nil {
-			log.Warning("HTTP: Failed to write response: ", err)
-			return
+		responseWriter := bufio.NewWriter(writer)
+		if err := response.Write(responseWriter); err != nil {
+			return err
 		}
-		responseWriter.Flush()
-	}()
-	finish.Wait()
-}
 
-type ServerFactory struct{}
+		if err := responseWriter.Flush(); err != nil {
+			return err
+		}
+		return nil
+	})
 
-func (this *ServerFactory) StreamCapability() internet.StreamConnectionType {
-	return internet.StreamConnectionTypeRawTCP
-}
-
-func (this *ServerFactory) Create(space app.Space, rawConfig interface{}, meta *proxy.InboundHandlerMeta) (proxy.InboundHandler, error) {
-	if !space.HasApp(dispatcher.APP_ID) {
-		return nil, internal.ErrBadConfiguration
+	if err := signal.ErrorOrFinish2(requestDone, responseDone); err != nil {
+		log.Info("HTTP|Server: Connecton ending with ", err)
+		input.CloseError()
+		output.CloseError()
+		return err
 	}
-	return NewServer(
-		rawConfig.(*Config),
-		space.GetApp(dispatcher.APP_ID).(dispatcher.PacketDispatcher),
-		meta), nil
+
+	return nil
 }
 
 func init() {
-	internal.MustRegisterInboundHandlerCreator("http", new(ServerFactory))
+	common.Must(common.RegisterConfig((*ServerConfig)(nil), func(ctx context.Context, config interface{}) (interface{}, error) {
+		return NewServer(ctx, config.(*ServerConfig))
+	}))
 }

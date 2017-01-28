@@ -1,16 +1,20 @@
 package dispatcher
 
 import (
-	"github.com/v2ray/v2ray-core/app"
-	v2net "github.com/v2ray/v2ray-core/common/net"
-	"github.com/v2ray/v2ray-core/transport/ray"
+	"context"
+
+	"v2ray.com/core/app"
+	"v2ray.com/core/transport/ray"
 )
 
-const (
-	APP_ID = app.ID(1)
-)
+// Interface dispatch a packet and possibly further network payload to its destination.
+type Interface interface {
+	DispatchToOutbound(ctx context.Context) ray.InboundRay
+}
 
-// PacketDispatcher dispatch a packet and possibly further network payload to its destination.
-type PacketDispatcher interface {
-	DispatchToOutbound(destination v2net.Destination) ray.InboundRay
+func FromSpace(space app.Space) Interface {
+	if app := space.GetApplication((*Interface)(nil)); app != nil {
+		return app.(Interface)
+	}
+	return nil
 }

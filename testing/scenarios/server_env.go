@@ -1,52 +1,56 @@
 package scenarios
 
 import (
-	"io/ioutil"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"runtime"
 	"time"
 
-	_ "github.com/v2ray/v2ray-core/app/router/rules"
-	"github.com/v2ray/v2ray-core/common/log"
+	"v2ray.com/core/common/log"
 
-	// The following are necessary as they register handlers in their init functions.
-	_ "github.com/v2ray/v2ray-core/proxy/blackhole"
-	_ "github.com/v2ray/v2ray-core/proxy/dokodemo"
-	_ "github.com/v2ray/v2ray-core/proxy/freedom"
-	_ "github.com/v2ray/v2ray-core/proxy/http"
-	_ "github.com/v2ray/v2ray-core/proxy/shadowsocks"
-	_ "github.com/v2ray/v2ray-core/proxy/socks"
-	_ "github.com/v2ray/v2ray-core/proxy/vmess/inbound"
-	_ "github.com/v2ray/v2ray-core/proxy/vmess/outbound"
+	"fmt"
+	"io/ioutil"
+	"sync"
+	_ "v2ray.com/core"
+	"v2ray.com/core/common/retry"
 )
 
 var (
-	runningServers = make([]*exec.Cmd, 0, 10)
-
-	binaryPath string
+	runningServers    = make([]*exec.Cmd, 0, 10)
+	testBinaryPath    string
+	testBinaryPathGen sync.Once
 )
 
-func BuildV2Ray() error {
-	if len(binaryPath) > 0 {
-		return nil
-	}
+func GenTestBinaryPath() {
+	testBinaryPathGen.Do(func() {
+		var tempDir string
+		err := retry.Timed(5, 100).On(func() error {
+			dir, err := ioutil.TempDir("", "v2ray")
+			if err != nil {
+				return err
+			}
+			tempDir = dir
+			return nil
+		})
+		if err != nil {
+			panic(err)
+		}
+		file := filepath.Join(tempDir, "v2ray.test")
+		if runtime.GOOS == "windows" {
+			file += ".exe"
+		}
+		testBinaryPath = file
+		fmt.Printf("Generated binary path: %s\n", file)
+	})
+}
 
-	dir, err := ioutil.TempDir("", "v2ray")
-	if err != nil {
-		return err
-	}
-	binaryPath = filepath.Join(dir, "v2ray")
-	if runtime.GOOS == "windows" {
-		binaryPath += ".exe"
-	}
-	cmd := exec.Command("go", "build", "-tags=json", "-o="+binaryPath, filepath.Join("github.com", "v2ray", "v2ray-core", "release", "server"))
-	return cmd.Run()
+func GetSourcePath() string {
+	return filepath.Join("v2ray.com", "core", "main")
 }
 
 func TestFile(filename string) string {
-	return filepath.Join(os.Getenv("GOPATH"), "src", "github.com", "v2ray", "v2ray-core", "testing", "scenarios", "data", filename)
+	return filepath.Join(os.Getenv("GOPATH"), "src", "v2ray.com", "core", "testing", "scenarios", "data", filename)
 }
 
 func InitializeServerSetOnce(testcase string) error {
@@ -73,9 +77,7 @@ func InitializeServer(configFile string) error {
 		return err
 	}
 
-	proc := exec.Command(binaryPath, "-config="+configFile)
-	proc.Stderr = os.Stderr
-	proc.Stdout = os.Stdout
+	proc := RunV2Ray(configFile)
 
 	err = proc.Start()
 	if err != nil {
@@ -92,7 +94,8 @@ func InitializeServer(configFile string) error {
 func CloseAllServers() {
 	log.Info("Closing all servers.")
 	for _, server := range runningServers {
-		server.Process.Kill()
+		server.Process.Signal(os.Interrupt)
+		server.Process.Wait()
 	}
 	runningServers = make([]*exec.Cmd, 0, 10)
 	log.Info("All server closed.")

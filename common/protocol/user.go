@@ -1,36 +1,44 @@
 package protocol
 
-type UserLevel byte
-
-const (
-	UserLevelAdmin     = UserLevel(255)
-	UserLevelUntrusted = UserLevel(0)
+import (
+	"v2ray.com/core/common/errors"
 )
 
-type User struct {
-	Account Account
-	Level   UserLevel
-	Email   string
-}
+var (
+	ErrUserMissing        = errors.New("User is not specified.")
+	ErrAccountMissing     = errors.New("Account is not specified.")
+	ErrNonMessageType     = errors.New("Not a protobuf message.")
+	ErrUnknownAccountType = errors.New("Unknown account type.")
+)
 
-func NewUser(account Account, level UserLevel, email string) *User {
-	return &User{
-		Account: account,
-		Level:   level,
-		Email:   email,
+func (v *User) GetTypedAccount() (Account, error) {
+	if v.GetAccount() == nil {
+		return nil, ErrAccountMissing
 	}
+
+	rawAccount, err := v.Account.GetInstance()
+	if err != nil {
+		return nil, err
+	}
+	if asAccount, ok := rawAccount.(AsAccount); ok {
+		return asAccount.AsAccount()
+	}
+	if account, ok := rawAccount.(Account); ok {
+		return account, nil
+	}
+	return nil, errors.New("Unknown account type: ", v.Account.Type)
 }
 
-type UserSettings struct {
-	PayloadReadTimeout int
-}
-
-func GetUserSettings(level UserLevel) UserSettings {
+func (v *User) GetSettings() UserSettings {
 	settings := UserSettings{
 		PayloadReadTimeout: 120,
 	}
-	if level > 0 {
+	if v.Level > 0 {
 		settings.PayloadReadTimeout = 0
 	}
 	return settings
+}
+
+type UserSettings struct {
+	PayloadReadTimeout uint32
 }

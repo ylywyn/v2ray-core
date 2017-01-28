@@ -6,16 +6,16 @@ import (
 	"net/url"
 	"testing"
 
-	v2net "github.com/v2ray/v2ray-core/common/net"
-	"github.com/v2ray/v2ray-core/testing/assert"
-	v2http "github.com/v2ray/v2ray-core/testing/servers/http"
+	"v2ray.com/core/common/net"
+	"v2ray.com/core/testing/assert"
+	v2http "v2ray.com/core/testing/servers/http"
 )
 
 func TestHttpProxy(t *testing.T) {
 	assert := assert.On(t)
 
 	httpServer := &v2http.Server{
-		Port:        v2net.Port(50042),
+		Port:        net.Port(50042),
 		PathHandler: make(map[string]http.HandlerFunc),
 	}
 	_, err := httpServer.Start()
@@ -49,7 +49,7 @@ func TestBlockHTTP(t *testing.T) {
 	assert := assert.On(t)
 
 	httpServer := &v2http.Server{
-		Port:        v2net.Port(50042),
+		Port:        net.Port(50042),
 		PathHandler: make(map[string]http.HandlerFunc),
 	}
 	_, err := httpServer.Start()

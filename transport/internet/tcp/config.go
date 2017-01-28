@@ -1,15 +1,19 @@
 package tcp
 
-type Config struct {
-	ConnectionReuse bool
-}
-
-func (this *Config) Apply() {
-	effectiveConfig = this
-}
-
-var (
-	effectiveConfig = &Config{
-		ConnectionReuse: true,
-	}
+import (
+	"v2ray.com/core/common"
+	"v2ray.com/core/transport/internet"
 )
+
+func (v *Config) IsConnectionReuse() bool {
+	if v == nil || v.ConnectionReuse == nil {
+		return true
+	}
+	return v.ConnectionReuse.Enable
+}
+
+func init() {
+	common.Must(internet.RegisterProtocolConfigCreator(internet.TransportProtocol_TCP, func() interface{} {
+		return new(Config)
+	}))
+}

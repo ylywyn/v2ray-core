@@ -5,8 +5,8 @@ import (
 	"os"
 	"time"
 
-	"github.com/v2ray/v2ray-core/common/platform"
-	"github.com/v2ray/v2ray-core/common/signal"
+	"v2ray.com/core/common/platform"
+	"v2ray.com/core/common/signal"
 )
 
 type LogWriter interface {
@@ -17,11 +17,9 @@ type LogWriter interface {
 type NoOpLogWriter struct {
 }
 
-func (this *NoOpLogWriter) Log(entry LogEntry) {
-	entry.Release()
-}
+func (v *NoOpLogWriter) Log(entry LogEntry) {}
 
-func (this *NoOpLogWriter) Close() {
+func (v *NoOpLogWriter) Close() {
 }
 
 type StdOutLogWriter struct {
@@ -36,12 +34,11 @@ func NewStdOutLogWriter() LogWriter {
 	}
 }
 
-func (this *StdOutLogWriter) Log(log LogEntry) {
-	this.logger.Print(log.String() + platform.LineSeparator())
-	log.Release()
+func (v *StdOutLogWriter) Log(log LogEntry) {
+	v.logger.Print(log.String() + platform.LineSeparator())
 }
 
-func (this *StdOutLogWriter) Close() {
+func (v *StdOutLogWriter) Close() {
 	time.Sleep(500 * time.Millisecond)
 }
 
@@ -52,30 +49,31 @@ type FileLogWriter struct {
 	cancel *signal.CancelSignal
 }
 
-func (this *FileLogWriter) Log(log LogEntry) {
+func (v *FileLogWriter) Log(log LogEntry) {
 	select {
-	case this.queue <- log.String():
+	case v.queue <- log.String():
 	default:
 		// We don't expect this to happen, but don't want to block main thread as well.
 	}
-	log.Release()
 }
 
-func (this *FileLogWriter) run() {
+func (v *FileLogWriter) run() {
+	v.cancel.WaitThread()
+	defer v.cancel.FinishThread()
+
 	for {
-		entry, open := <-this.queue
+		entry, open := <-v.queue
 		if !open {
 			break
 		}
-		this.logger.Print(entry + platform.LineSeparator())
+		v.logger.Print(entry + platform.LineSeparator())
 	}
-	this.cancel.Done()
 }
 
-func (this *FileLogWriter) Close() {
-	close(this.queue)
-	<-this.cancel.WaitForDone()
-	this.file.Close()
+func (v *FileLogWriter) Close() {
+	close(v.queue)
+	v.cancel.WaitForDone()
+	v.file.Close()
 }
 
 func NewFileLogWriter(path string) (*FileLogWriter, error) {

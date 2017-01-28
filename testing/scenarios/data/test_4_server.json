@@ -17,10 +17,8 @@
           "alterId": 10
         }
       ],
-      "features": {
-        "detour": {
-          "to": "detour"
-        }
+      "detour": {
+        "to": "detour"
       }
     }
   },
@@ -46,6 +44,10 @@
     }
   ],
   "transport": {
-    "connectionReuse": true
+    "kcpSettings": {
+      "header": {
+        "type": "srtp"
+      }
+    }
   }
 }

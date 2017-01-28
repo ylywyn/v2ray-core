@@ -5,19 +5,18 @@ import (
 	"net/http"
 	"testing"
 
-	"github.com/v2ray/v2ray-core/common/alloc"
-	v2io "github.com/v2ray/v2ray-core/common/io"
-	. "github.com/v2ray/v2ray-core/proxy/blackhole"
-	"github.com/v2ray/v2ray-core/testing/assert"
+	"v2ray.com/core/common/buf"
+	. "v2ray.com/core/proxy/blackhole"
+	"v2ray.com/core/testing/assert"
 )
 
 func TestHTTPResponse(t *testing.T) {
 	assert := assert.On(t)
 
-	buffer := alloc.NewBuffer().Clear()
+	buffer := buf.New()
 
 	httpResponse := new(HTTPResponse)
-	httpResponse.WriteTo(v2io.NewAdaptiveWriter(buffer))
+	httpResponse.WriteTo(buf.NewWriter(buffer))
 
 	reader := bufio.NewReader(buffer)
 	response, err := http.ReadResponse(reader, nil)

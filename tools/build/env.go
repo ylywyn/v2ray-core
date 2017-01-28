@@ -10,6 +10,8 @@ const (
 	Windows   = GoOS("windows")
 	MacOS     = GoOS("darwin")
 	Linux     = GoOS("linux")
+	FreeBSD   = GoOS("freebsd")
+	OpenBSD   = GoOS("openbsd")
 	UnknownOS = GoOS("unknown")
 )
 
@@ -21,41 +23,49 @@ const (
 	Arm         = GoArch("arm")
 	Arm64       = GoArch("arm64")
 	Mips64      = GoArch("mips64")
+	Mips        = GoArch("mips")
+	MipsLE      = GoArch("mipsle")
 	UnknownArch = GoArch("unknown")
 )
 
 func parseOS(rawOS string) GoOS {
 	osStr := strings.ToLower(rawOS)
-	if osStr == "windows" || osStr == "win" {
+	switch osStr {
+	case "windows", "win":
 		return Windows
-	}
-	if osStr == "darwin" || osStr == "mac" || osStr == "macos" || osStr == "osx" {
+	case "darwin", "mac", "macos", "osx":
 		return MacOS
-	}
-	if osStr == "linux" || osStr == "debian" || osStr == "ubuntu" || osStr == "redhat" || osStr == "centos" {
+	case "linux", "debian", "ubuntu", "redhat", "centos":
 		return Linux
+	case "freebsd":
+		return FreeBSD
+	case "openbsd":
+		return OpenBSD
+	default:
+		return UnknownOS
 	}
-	return UnknownOS
 }
 
 func parseArch(rawArch string) GoArch {
 	archStr := strings.ToLower(rawArch)
-	if archStr == "x86" || archStr == "386" || archStr == "i386" {
+	switch archStr {
+	case "x86", "386", "i386":
 		return X86
-	}
-	if archStr == "amd64" || archStr == "x86-64" || archStr == "x64" {
+	case "amd64", "x86-64", "x64":
 		return Amd64
-	}
-	if archStr == "arm" {
+	case "arm":
 		return Arm
-	}
-	if archStr == "arm64" {
+	case "arm64":
 		return Arm64
-	}
-	if archStr == "mips" || archStr == "mips64" {
+	case "mips":
+		return Mips
+	case "mipsle":
+		return MipsLE
+	case "mips64":
 		return Mips64
+	default:
+		return UnknownArch
 	}
-	return UnknownArch
 }
 
 func getSuffix(os GoOS, arch GoArch) string {
@@ -82,8 +92,28 @@ func getSuffix(os GoOS, arch GoArch) string {
 			suffix = "-linux-arm64"
 		case Mips64:
 			suffix = "-linux-mips64"
+		case Mips:
+			suffix = "-linux-mips"
+		case MipsLE:
+			suffix = "-linux-mipsle"
 		}
-
+	case FreeBSD:
+		switch arch {
+		case X86:
+			suffix = "-freebsd-32"
+		case Amd64:
+			suffix = "-freebsd-64"
+		case Arm:
+			suffix = "-freebsd-arm"
+		}
+	case OpenBSD:
+		switch arch {
+		case X86:
+			suffix = "-openbsd-32"
+		case Amd64:
+			suffix = "-openbsd-64"
+		}
 	}
+
 	return suffix
 }

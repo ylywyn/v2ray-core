@@ -11,15 +11,15 @@ var (
 )
 
 type TimeOutReader struct {
-	timeout    int
+	timeout    uint32
 	connection net.Conn
 	worker     io.Reader
 }
 
-func NewTimeOutReader(timeout int /* seconds */, connection net.Conn) *TimeOutReader {
+func NewTimeOutReader(timeout uint32 /* seconds */, connection net.Conn) *TimeOutReader {
 	reader := &TimeOutReader{
 		connection: connection,
-		timeout:    -100,
+		timeout:    0,
 	}
 	reader.SetTimeOut(timeout)
 	return reader
@@ -29,12 +29,12 @@ func (reader *TimeOutReader) Read(p []byte) (int, error) {
 	return reader.worker.Read(p)
 }
 
-func (reader *TimeOutReader) GetTimeOut() int {
+func (reader *TimeOutReader) GetTimeOut() uint32 {
 	return reader.timeout
 }
 
-func (reader *TimeOutReader) SetTimeOut(value int) {
-	if value == reader.timeout {
+func (reader *TimeOutReader) SetTimeOut(value uint32) {
+	if reader.worker != nil && value == reader.timeout {
 		return
 	}
 	reader.timeout = value
@@ -50,21 +50,16 @@ func (reader *TimeOutReader) SetTimeOut(value int) {
 	}
 }
 
-func (reader *TimeOutReader) Release() {
-	reader.connection = nil
-	reader.worker = nil
-}
-
 type timedReaderWorker struct {
-	timeout    int
+	timeout    uint32
 	connection net.Conn
 }
 
-func (this *timedReaderWorker) Read(p []byte) (int, error) {
-	deadline := time.Duration(this.timeout) * time.Second
-	this.connection.SetReadDeadline(time.Now().Add(deadline))
-	nBytes, err := this.connection.Read(p)
-	this.connection.SetReadDeadline(emptyTime)
+func (v *timedReaderWorker) Read(p []byte) (int, error) {
+	deadline := time.Duration(v.timeout) * time.Second
+	v.connection.SetReadDeadline(time.Now().Add(deadline))
+	nBytes, err := v.connection.Read(p)
+	v.connection.SetReadDeadline(emptyTime)
 	return nBytes, err
 }
 
@@ -72,6 +67,6 @@ type noOpReaderWorker struct {
 	connection net.Conn
 }
 
-func (this *noOpReaderWorker) Read(p []byte) (int, error) {
-	return this.connection.Read(p)
+func (v *noOpReaderWorker) Read(p []byte) (int, error) {
+	return v.connection.Read(p)
 }

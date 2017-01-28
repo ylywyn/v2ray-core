@@ -1,45 +1,27 @@
 // Package proxy contains all proxies used by V2Ray.
-package proxy // import "github.com/v2ray/v2ray-core/proxy"
+package proxy
 
 import (
-	"github.com/v2ray/v2ray-core/common/alloc"
-	v2net "github.com/v2ray/v2ray-core/common/net"
-	"github.com/v2ray/v2ray-core/transport/internet"
-	"github.com/v2ray/v2ray-core/transport/ray"
+	"context"
+
+	"v2ray.com/core/common/net"
+	"v2ray.com/core/transport/internet"
+	"v2ray.com/core/transport/ray"
 )
 
-type HandlerState int
+// An Inbound processes inbound connections.
+type Inbound interface {
+	Network() net.NetworkList
 
-const (
-	HandlerStateStopped = HandlerState(0)
-	HandlerStateRunning = HandlerState(1)
-)
-
-type InboundHandlerMeta struct {
-	Tag            string
-	Address        v2net.Address
-	Port           v2net.Port
-	StreamSettings *internet.StreamSettings
+	Process(context.Context, net.Network, internet.Connection) error
 }
 
-type OutboundHandlerMeta struct {
-	Tag            string
-	Address        v2net.Address
-	StreamSettings *internet.StreamSettings
+// An Outbound process outbound connections.
+type Outbound interface {
+	Process(context.Context, ray.OutboundRay) error
 }
 
-// An InboundHandler handles inbound network connections to V2Ray.
-type InboundHandler interface {
-	// Listen starts a InboundHandler.
-	Start() error
-	// Close stops the handler to accepting anymore inbound connections.
-	Close()
-	// Port returns the port that the handler is listening on.
-	Port() v2net.Port
-}
-
-// An OutboundHandler handles outbound network connection for V2Ray.
-type OutboundHandler interface {
-	// Dispatch sends one or more Packets to its destination.
-	Dispatch(destination v2net.Destination, payload *alloc.Buffer, ray ray.OutboundRay) error
+// Dialer is used by OutboundHandler for creating outbound connections.
+type Dialer interface {
+	Dial(ctx context.Context, destination net.Destination) (internet.Connection, error)
 }

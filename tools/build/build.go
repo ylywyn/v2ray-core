@@ -7,7 +7,7 @@ import (
 	"path/filepath"
 	"runtime"
 
-	"github.com/v2ray/v2ray-core/tools/git"
+	"v2ray.com/core"
 )
 
 var (
@@ -61,16 +61,12 @@ func build(targetOS, targetArch string, archive bool, version string, metadataFi
 	v2rayArch := parseArch(targetArch)
 
 	if len(version) == 0 {
-		v, err := git.RepoVersionHead()
-		if v == git.VersionUndefined {
-			v = "custom"
-		}
-		if err != nil {
-			fmt.Println("Unable to detect V2Ray version: " + err.Error())
-			return
-		}
-		version = v
+		version = os.Getenv("TRAVIS_TAG")
 	}
+	if len(version) == 0 {
+		version = core.Version()
+	}
+
 	fmt.Printf("Building V2Ray (%s) for %s %s\n", version, v2rayOS, v2rayArch)
 
 	targetDir, err := createTargetDirectory(version, v2rayOS, v2rayArch)

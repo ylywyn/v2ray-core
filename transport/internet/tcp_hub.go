@@ -1,25 +1,33 @@
 package internet
 
 import (
-	"crypto/tls"
-	"errors"
 	"net"
 	"sync"
 
-	"github.com/v2ray/v2ray-core/common/log"
-	v2net "github.com/v2ray/v2ray-core/common/net"
-	v2tls "github.com/v2ray/v2ray-core/transport/internet/tls"
+	"v2ray.com/core/common/errors"
+	"v2ray.com/core/common/log"
+	v2net "v2ray.com/core/common/net"
+	"v2ray.com/core/common/retry"
 )
 
 var (
-	ErrClosedConnection = errors.New("Connection already closed.")
-
-	KCPListenFunc    ListenFunc
-	TCPListenFunc    ListenFunc
-	RawTCPListenFunc ListenFunc
+	transportListenerCache = make(map[TransportProtocol]ListenFunc)
 )
 
-type ListenFunc func(address v2net.Address, port v2net.Port) (Listener, error)
+func RegisterTransportListener(protocol TransportProtocol, listener ListenFunc) error {
+	if _, found := transportListenerCache[protocol]; found {
+		return errors.New("Internet|TCPHub: ", protocol, " listener already registered.")
+	}
+	transportListenerCache[protocol] = listener
+	return nil
+}
+
+type ListenFunc func(address v2net.Address, port v2net.Port, options ListenOptions) (Listener, error)
+type ListenOptions struct {
+	Stream       *StreamConfig
+	RecvOrigDest bool
+}
+
 type Listener interface {
 	Accept() (Connection, error)
 	Close() error
@@ -31,64 +39,56 @@ type TCPHub struct {
 	listener     Listener
 	connCallback ConnectionHandler
 	accepting    bool
-	tlsConfig    *tls.Config
 }
 
-func ListenTCP(address v2net.Address, port v2net.Port, callback ConnectionHandler, settings *StreamSettings) (*TCPHub, error) {
-	var listener Listener
-	var err error
-	switch {
-	case settings.IsCapableOf(StreamConnectionTypeTCP):
-		listener, err = TCPListenFunc(address, port)
-	case settings.IsCapableOf(StreamConnectionTypeKCP):
-		listener, err = KCPListenFunc(address, port)
-	case settings.IsCapableOf(StreamConnectionTypeRawTCP):
-		listener, err = RawTCPListenFunc(address, port)
-	default:
-		log.Error("Internet|Listener: Unknown stream type: ", settings.Type)
-		err = ErrUnsupportedStreamType
+func ListenTCP(address v2net.Address, port v2net.Port, callback ConnectionHandler, settings *StreamConfig) (*TCPHub, error) {
+	options := ListenOptions{
+		Stream: settings,
 	}
-
+	protocol := settings.GetEffectiveProtocol()
+	listenFunc := transportListenerCache[protocol]
+	if listenFunc == nil {
+		return nil, errors.New("Internet|TCPHub: ", protocol, " listener not registered.")
+	}
+	listener, err := listenFunc(address, port, options)
 	if err != nil {
-		log.Warning("Internet|Listener: Failed to listen on ", address, ":", port)
-		return nil, err
-	}
-
-	var tlsConfig *tls.Config
-	if settings.Security == StreamSecurityTypeTLS {
-		tlsConfig = settings.TLSSettings.GetTLSConfig()
+		return nil, errors.Base(err).Message("Interent|TCPHub: Failed to listen on address: ", address, ":", port)
 	}
 
 	hub := &TCPHub{
 		listener:     listener,
 		connCallback: callback,
-		tlsConfig:    tlsConfig,
 	}
 
 	go hub.start()
 	return hub, nil
 }
 
-func (this *TCPHub) Close() {
-	this.accepting = false
-	this.listener.Close()
+func (v *TCPHub) Close() {
+	v.accepting = false
+	v.listener.Close()
 }
 
-func (this *TCPHub) start() {
-	this.accepting = true
-	for this.accepting {
-		conn, err := this.listener.Accept()
-
-		if err != nil {
-			if this.accepting {
-				log.Warning("Internet|Listener: Failed to accept new TCP connection: ", err)
+func (v *TCPHub) start() {
+	v.accepting = true
+	for v.accepting {
+		var newConn Connection
+		err := retry.ExponentialBackoff(10, 200).On(func() error {
+			if !v.accepting {
+				return nil
 			}
-			continue
+			conn, err := v.listener.Accept()
+			if err != nil {
+				if v.accepting {
+					log.Warning("Internet|Listener: Failed to accept new TCP connection: ", err)
+				}
+				return err
+			}
+			newConn = conn
+			return nil
+		})
+		if err == nil && newConn != nil {
+			go v.connCallback(newConn)
 		}
-		if this.tlsConfig != nil {
-			tlsConn := tls.Server(conn, this.tlsConfig)
-			conn = v2tls.NewConnection(tlsConn)
-		}
-		go this.connCallback(conn)
 	}
 }

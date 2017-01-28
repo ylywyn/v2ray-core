@@ -3,14 +3,18 @@ package dns
 import (
 	"net"
 
-	"github.com/v2ray/v2ray-core/app"
+	"v2ray.com/core/app"
 )
 
-const (
-	APP_ID = app.ID(2)
-)
-
-// A DnsCache is an internal cache of DNS resolutions.
+// A Server is a DNS server for responding DNS queries.
 type Server interface {
 	Get(domain string) []net.IP
+}
+
+func FromSpace(space app.Space) Server {
+	app := space.GetApplication((*Server)(nil))
+	if app == nil {
+		return nil
+	}
+	return app.(Server)
 }

@@ -1,14 +1,14 @@
 package assert
 
 import (
-	v2net "github.com/v2ray/v2ray-core/common/net"
+	"v2ray.com/core/common/net"
 )
 
-func (this *Assert) Address(value v2net.Address) *AddressSubject {
+func (v *Assert) Address(value net.Address) *AddressSubject {
 	return &AddressSubject{
 		Subject: Subject{
 			disp: value.String(),
-			a:    this,
+			a:    v,
 		},
 		value: value,
 	}
@@ -16,17 +16,17 @@ func (this *Assert) Address(value v2net.Address) *AddressSubject {
 
 type AddressSubject struct {
 	Subject
-	value v2net.Address
+	value net.Address
 }
 
-func (subject *AddressSubject) NotEquals(another v2net.Address) {
-	if subject.value.Equals(another) {
+func (subject *AddressSubject) NotEquals(another net.Address) {
+	if subject.value == another {
 		subject.Fail("not equals to", another.String())
 	}
 }
 
-func (subject *AddressSubject) Equals(another v2net.Address) {
-	if !subject.value.Equals(another) {
+func (subject *AddressSubject) Equals(another net.Address) {
+	if subject.value != another {
 		subject.Fail("equals to", another.String())
 	}
 }
@@ -44,37 +44,37 @@ func (subject *AddressSubject) EqualsString(another string) {
 }
 
 func (subject *AddressSubject) IsIPv4() {
-	if !subject.value.IsIPv4() {
+	if !subject.value.Family().IsIPv4() {
 		subject.Fail("is", "an IPv4 address")
 	}
 }
 
 func (subject *AddressSubject) IsNotIPv4() {
-	if subject.value.IsIPv4() {
+	if subject.value.Family().IsIPv4() {
 		subject.Fail("is not", "an IPv4 address")
 	}
 }
 
 func (subject *AddressSubject) IsIPv6() {
-	if !subject.value.IsIPv6() {
+	if !subject.value.Family().IsIPv6() {
 		subject.Fail("is", "an IPv6 address")
 	}
 }
 
 func (subject *AddressSubject) IsNotIPv6() {
-	if subject.value.IsIPv6() {
+	if subject.value.Family().IsIPv6() {
 		subject.Fail("is not", "an IPv6 address")
 	}
 }
 
 func (subject *AddressSubject) IsDomain() {
-	if !subject.value.IsDomain() {
+	if !subject.value.Family().IsDomain() {
 		subject.Fail("is", "a domain address")
 	}
 }
 
 func (subject *AddressSubject) IsNotDomain() {
-	if subject.value.IsDomain() {
+	if subject.value.Family().IsDomain() {
 		subject.Fail("is not", "a domain address")
 	}
 }
